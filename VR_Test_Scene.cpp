@@ -132,36 +132,90 @@ int main() {
     std::cout << "OpenXR session created successfully.\n";
 
     // 8️⃣ Create reference space
-    XrReferenceSpaceCreateInfo spaceInfo{ XR_TYPE_REFERENCE_SPACE_CREATE_INFO };
-    spaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
-    spaceInfo.poseInReferenceSpace = {{0,0,0,1}, {0,0,0}};
-    XrSpace space = XR_NULL_HANDLE;
-    CHECK_XR_RESULT(xrCreateReferenceSpace(session, &spaceInfo, &space), "Failed to create reference space");
+
+    // world space 
+    XrReferenceSpaceCreateInfo referenceSpaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    referenceSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE; // or XR_REFERENCE_SPACE_TYPE_STAGE
+    referenceSpaceInfo.poseInReferenceSpace = {{0,0,0,1}, {0,0,0}}; // Identity pose
+    XrSpace referenceSpace = XR_NULL_HANDLE;
+    CHECK_XR_RESULT(
+        xrCreateReferenceSpace(session, &referenceSpaceInfo, &referenceSpace),
+        "Failed to create reference space"
+    );
+
+    // space of the headset itself
+    XrReferenceSpaceCreateInfo viewSpaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
+    viewSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_VIEW; // Headset itself
+    viewSpaceInfo.poseInReferenceSpace = {{0,0,0,1}, {0,0,0}};
+    XrSpace headSpace = XR_NULL_HANDLE;
+    CHECK_XR_RESULT(
+        xrCreateReferenceSpace(session, &viewSpaceInfo, &headSpace),
+        "Failed to create head/view space"
+    );
 
     std::cout << "Tracking headset... Press Ctrl+C to exit.\n";
 
-    // 9️⃣ Frame loop
-    XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
+    // 9️⃣ Frame loop with proper checks and wait for valid pose
+
+    XrEventDataBuffer eventBuffer{XR_TYPE_EVENT_DATA_BUFFER};
+    bool sessionRunning = false;
+    XrSessionState sessionState = XR_SESSION_STATE_UNKNOWN;
+
+    while (!sessionRunning) {
+        while (xrPollEvent(instance, &eventBuffer) == XR_SUCCESS) {
+            switch (eventBuffer.type) {
+                case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
+                    auto* stateChanged = reinterpret_cast<XrEventDataSessionStateChanged*>(&eventBuffer);
+                    sessionState = stateChanged->state;
+                    std::cout << "Session state: " << sessionState << std::endl;
+                    
+                    if (sessionState == XR_SESSION_STATE_READY) {
+                        XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
+                        beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
+                        CHECK_XR_RESULT(xrBeginSession(session, &beginInfo), "xrBeginSession failed");
+                        sessionRunning = true;
+                    }
+                    break;
+                }
+            }
+            eventBuffer.type = XR_TYPE_EVENT_DATA_BUFFER; // reset
+        }
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+    }
+
+    std::cout << "Session is now focused. Polling poses...\n";
+
+    if (sessionState == XR_SESSION_STATE_VISIBLE) {
+        std::cout << "Headset tracking active.\n";
+    }
+
+    // 7️⃣ Frame loop
     while (true) {
-        XrFrameWaitInfo frameWaitInfo{ XR_TYPE_FRAME_WAIT_INFO };
+        XrFrameWaitInfo waitInfo{ XR_TYPE_FRAME_WAIT_INFO };
         XrFrameState frameState{ XR_TYPE_FRAME_STATE };
-        xrWaitFrame(session, &frameWaitInfo, &frameState);
+        xrWaitFrame(session, &waitInfo, &frameState);
 
-        XrFrameBeginInfo frameBeginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
-        xrBeginFrame(session, &frameBeginInfo);
+        XrFrameBeginInfo beginInfo{ XR_TYPE_FRAME_BEGIN_INFO };
+        xrBeginFrame(session, &beginInfo);
 
-        // Use session space as base, or create a view/reference space
-        xrLocateSpace(space, XR_NULL_HANDLE, frameState.predictedDisplayTime, &location);
+        XrSpaceLocation location{ XR_TYPE_SPACE_LOCATION };
+        // head space and reference space must be different
+        xrLocateSpace(headSpace, referenceSpace, frameState.predictedDisplayTime, &location);
 
         if ((location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) &&
             (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
             XrVector3f pos = location.pose.position;
             XrQuaternionf ori = location.pose.orientation;
-            std::cout << "Pos: (" << pos.x << "," << pos.y << "," << pos.z << ") "
-                    << "Ori: (" << ori.x << "," << ori.y << "," << ori.z << "," << ori.w << ")\n";
+            std::cout << "Headset Pos: (" << pos.x << "," << pos.y << "," << pos.z << ") "
+                      << "Ori: (" << ori.x << "," << ori.y << "," << ori.z << "," << ori.w << ")\n";
         } else {
             std::cout << "Pose not valid yet.\n";
         }
+
+        std::cout << "flags: " << location.locationFlags 
+          << " POSITION_VALID: " << (location.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)
+          << " ORIENTATION_VALID: " << (location.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)
+          << std::endl;
 
         xrEndFrame(session, nullptr);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
@@ -169,7 +223,8 @@ int main() {
 
 
     // Cleanup
-    xrDestroySpace(space);
+    xrDestroySpace(headSpace);
+    xrDestroySpace(referenceSpace);
     xrDestroySession(session);
     xrDestroyInstance(instance);
     d3dContext->Release();
