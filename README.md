@@ -34,3 +34,17 @@ REFLECT [RUNTIMEIPC] WARN@ arvr\projects\xrruntime\mobile\1stParty\RuntimeIPC\Ru
 REFLECT [RUNTIMEIPC] WARN@ arvr\projects\xrruntime\mobile\1stParty\RuntimeIPC\RuntimeIPCHelpers\Include\Private\RuntimeReflectIPC.h(3022): ipc_GetClientStateHandle FAILED: SurfaceInputsClientState
 OpenXR session created successfully.
 Tracking headset... Press Ctrl+C to exit.
+Session state: 1
+Session state: 2
+Session is now focused. Polling poses...
+Head Pos: (0.0458792,1.09527,0.113532) Ori: (-0.318669,-0.0468254,0.0871655,-0.942687)
+Left Controller Pos: INVALID Ori: INVALID
+Right Controller Pos: INVALID Ori: INVALID
+Head Pos: (0.0450687,1.09498,0.113509) Ori: (-0.318675,-0.0481832,0.0868162,-0.942649)
+Left Controller Pos: INVALID Ori: INVALID
+Right Controller Pos: INVALID Ori: INVALID
+Head Pos: (0.0444343,1.09484,0.113407) Ori: (-0.318269,-0.0487653,0.0857889,-0.94285)
+Left Controller Pos: INVALID Ori: INVALID
+Right Controller Pos: INVALID Ori: INVALID
+Head Pos: (0.0438326,1.0947,0.113114) Ori: (-0.317737,-0.049586,0.0852173,-0.943039)
+Left Controller Pos: INVALID Ori: INVALID
