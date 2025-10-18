@@ -6,9 +6,11 @@
 #include <openxr/openxr.h>
 #include <openxr/openxr_platform.h>
 #include <iostream>
+#include <array>
 #include <vector>
 #include <thread>
 #include <chrono>
+#include <cstring>
 
 #pragma comment(lib, "d3d11.lib")
 
@@ -17,6 +19,24 @@
         std::cerr << "OpenXR Error: " << msg << " (" << res << ")" << std::endl; \
         exit(1); \
     }
+
+namespace Side {
+    const int LEFT = 0;
+    const int RIGHT = 1;
+    const int COUNT = 2;
+}  // namespace Side
+
+struct InputState {
+    XrActionSet actionSet{XR_NULL_HANDLE};
+    XrAction grabAction{XR_NULL_HANDLE};
+    XrAction poseAction{XR_NULL_HANDLE};
+    XrAction vibrateAction{XR_NULL_HANDLE};
+    XrAction quitAction{XR_NULL_HANDLE};
+    std::array<XrPath, Side::COUNT> handSubactionPath;
+    std::array<XrSpace, Side::COUNT> handSpace;
+    std::array<float, Side::COUNT> handScale = {{1.0f, 1.0f}};
+    std::array<XrBool32, Side::COUNT> handActive;
+};
 
 int main() {
     std::cout << "=== OpenXR Headset Tracker ===\n";
@@ -133,15 +153,23 @@ int main() {
 
     // 8️⃣ Create reference space
 
-    // world space 
+    // world space (prefer LOCAL for device-relative, room-agnostic tracking)
     XrReferenceSpaceCreateInfo referenceSpaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
-    referenceSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE; // or XR_REFERENCE_SPACE_TYPE_STAGE
+    referenceSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_LOCAL;
     referenceSpaceInfo.poseInReferenceSpace = {{0,0,0,1}, {0,0,0}}; // Identity pose
     XrSpace referenceSpace = XR_NULL_HANDLE;
-    CHECK_XR_RESULT(
-        xrCreateReferenceSpace(session, &referenceSpaceInfo, &referenceSpace),
-        "Failed to create reference space"
-    );
+    XrResult refRes = xrCreateReferenceSpace(session, &referenceSpaceInfo, &referenceSpace);
+    if (XR_FAILED(refRes)) {
+        // Fallback to STAGE if LOCAL not available
+        referenceSpaceInfo.referenceSpaceType = XR_REFERENCE_SPACE_TYPE_STAGE;
+        CHECK_XR_RESULT(
+            xrCreateReferenceSpace(session, &referenceSpaceInfo, &referenceSpace),
+            "Failed to create reference space (LOCAL and STAGE)"
+        );
+        std::cout << "Using STAGE reference space (LOCAL unavailable).\n";
+    } else {
+        std::cout << "Using LOCAL reference space.\n";
+    }
 
     // space of the headset itself
     XrReferenceSpaceCreateInfo viewSpaceInfo{XR_TYPE_REFERENCE_SPACE_CREATE_INFO};
@@ -154,6 +182,8 @@ int main() {
     );
 
     // Controller tracking
+    InputState m_input;
+
     // Create action set
     XrActionSet actionSet = XR_NULL_HANDLE;
     {
@@ -161,56 +191,69 @@ int main() {
         strcpy_s(actionSetInfo.actionSetName, "gameplay");
         strcpy_s(actionSetInfo.localizedActionSetName, "Gameplay");
         actionSetInfo.priority = 0;
-        CHECK_XR_RESULT(xrCreateActionSet(instance, &actionSetInfo, &actionSet), "Failed to create action set");
+        CHECK_XR_RESULT(xrCreateActionSet(instance, &actionSetInfo, &m_input.actionSet), "Failed to create action set");
     }
 
     // Create hand pose actions
-    XrAction leftHandPoseAction = XR_NULL_HANDLE;
-    XrAction rightHandPoseAction = XR_NULL_HANDLE;
-    XrPath leftHandPath, rightHandPath;
-    CHECK_XR_RESULT(xrStringToPath(instance, "/user/hand/left", &leftHandPath), "Failed to get left hand path");
-    CHECK_XR_RESULT(xrStringToPath(instance, "/user/hand/right", &rightHandPath), "Failed to get right hand path");
+    CHECK_XR_RESULT(xrStringToPath(instance, "/user/hand/left", &m_input.handSubactionPath[Side::LEFT]), "Failed to get left hand path");
+    CHECK_XR_RESULT(xrStringToPath(instance, "/user/hand/right", &m_input.handSubactionPath[Side::RIGHT]), "Failed to get right hand path");
 
     {
         XrActionCreateInfo actionInfo{ XR_TYPE_ACTION_CREATE_INFO };
         actionInfo.actionType = XR_ACTION_TYPE_POSE_INPUT;
-        actionInfo.countSubactionPaths = 1;
-
-        // Left hand
-        actionInfo.subactionPaths = &leftHandPath;
-        strcpy_s(actionInfo.actionName, "left_hand_pose");
-        strcpy_s(actionInfo.localizedActionName, "Left Hand Pose");
-        CHECK_XR_RESULT(xrCreateAction(actionSet, &actionInfo, &leftHandPoseAction), "Failed to create left hand pose action");
-
-        // Right hand
-        actionInfo.subactionPaths = &rightHandPath;
-        strcpy_s(actionInfo.actionName, "right_hand_pose");
-        strcpy_s(actionInfo.localizedActionName, "Right Hand Pose");
-        CHECK_XR_RESULT(xrCreateAction(actionSet, &actionInfo, &rightHandPoseAction), "Failed to create right hand pose action");
+        strcpy_s(actionInfo.actionName, "hand_pose");
+        strcpy_s(actionInfo.localizedActionName, "Hand Pose");
+        actionInfo.countSubactionPaths = uint32_t(m_input.handSubactionPath.size()); // for the two hands
+        actionInfo.subactionPaths = m_input.handSubactionPath.data();
+        CHECK_XR_RESULT(xrCreateAction(m_input.actionSet, &actionInfo, &m_input.poseAction), "Failed to create pose action");
     }
 
-    // Suggest bindings for Oculus Touch
-    XrPath profilePath;
-    xrStringToPath(instance, "/interaction_profiles/oculus/touch_controller", &profilePath);
+    // Suggest bindings: try Meta/Oculus profiles and fallback to simple controller
+    XrPath leftGripPath, rightGripPath, leftAimPath, rightAimPath;
+    xrStringToPath(instance, "/user/hand/left/input/grip/pose", &leftGripPath);
+    xrStringToPath(instance, "/user/hand/right/input/grip/pose", &rightGripPath);
+    xrStringToPath(instance, "/user/hand/left/input/aim/pose", &leftAimPath);
+    xrStringToPath(instance, "/user/hand/right/input/aim/pose", &rightAimPath);
 
-    XrPath leftGripPath, rightGripPath;
-    xrStringToPath(instance, "/user/hand/left/input/aim/pose", &leftGripPath);
-    xrStringToPath(instance, "/user/hand/right/input/aim/pose", &rightGripPath);
-
-
-    std::vector<XrActionSuggestedBinding> bindings = {
-        { leftHandPoseAction, leftGripPath },
-        { rightHandPoseAction, rightGripPath }
+    const char* candidateProfiles[] = {
+        "/interaction_profiles/meta/touch_plus_controller",
+        "/interaction_profiles/oculus/touch_controller_v3",
+        "/interaction_profiles/oculus/touch_controller_v2",
+        "/interaction_profiles/oculus/touch_controller",
+        "/interaction_profiles/khr/simple_controller"
     };
 
-    XrInteractionProfileSuggestedBinding suggested{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
-    suggested.interactionProfile = profilePath;
-    suggested.suggestedBindings = bindings.data();
-    suggested.countSuggestedBindings = (uint32_t)bindings.size();
-    xrSuggestInteractionProfileBindings(instance, &suggested);
-
-    XrSpace leftHandSpace = XR_NULL_HANDLE;
-    XrSpace rightHandSpace = XR_NULL_HANDLE;
+    bool anySuggested = false;
+    for (const char* profileStr : candidateProfiles) {
+        XrPath profilePath{};
+        if (XR_FAILED(xrStringToPath(instance, profileStr, &profilePath))) continue;
+        std::vector<XrActionSuggestedBinding> bindings;
+        if (std::string(profileStr).find("simple_controller") != std::string::npos) {
+            bindings = {
+                { m_input.poseAction, leftAimPath },
+                { m_input.poseAction, rightAimPath }
+            };
+        } else {
+            bindings = {
+                { m_input.poseAction, leftGripPath },
+                { m_input.poseAction, rightGripPath }
+            };
+        }
+        XrInteractionProfileSuggestedBinding suggested{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
+        suggested.interactionProfile = profilePath;
+        suggested.suggestedBindings = bindings.data();
+        suggested.countSuggestedBindings = (uint32_t)bindings.size();
+        XrResult sb = xrSuggestInteractionProfileBindings(instance, &suggested);
+        if (XR_SUCCEEDED(sb)) {
+            std::cout << "Suggested bindings for profile: " << profileStr << "\n";
+            anySuggested = true;
+        } else {
+            std::cerr << "Warning: Failed to suggest bindings for '" << profileStr << "' (" << sb << ")\n";
+        }
+    }
+    if (!anySuggested) {
+        std::cerr << "No interaction profile bindings suggested. Controller poses may be inactive.\n";
+    }
 
     std::cout << "Tracking headset... Press Ctrl+C to exit.\n";
 
@@ -226,30 +269,40 @@ int main() {
                 case XR_TYPE_EVENT_DATA_SESSION_STATE_CHANGED: {
                     auto* stateChanged = reinterpret_cast<XrEventDataSessionStateChanged*>(&eventBuffer);
                     sessionState = stateChanged->state;
-                    std::cout << "Session state: " << sessionState << std::endl;
+                    std::cout << "Session state: " << static_cast<int>(sessionState) << std::endl;
                     
                     if (sessionState == XR_SESSION_STATE_READY) {
                         XrSessionBeginInfo beginInfo{XR_TYPE_SESSION_BEGIN_INFO};
                         beginInfo.primaryViewConfigurationType = XR_VIEW_CONFIGURATION_TYPE_PRIMARY_STEREO;
                         CHECK_XR_RESULT(xrBeginSession(session, &beginInfo), "xrBeginSession failed");
 
-                        // Attach action set
-                        XrSessionActionSetsAttachInfo attachInfo{ XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO };
-                        attachInfo.countActionSets = 1;
-                        attachInfo.actionSets = &actionSet;
-                        CHECK_XR_RESULT(xrAttachSessionActionSets(session, &attachInfo), "Failed to attach action sets");
-
+                        // maybe able to create before session begins
                         // Create action spaces
-                        XrActionSpaceCreateInfo spaceInfo{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
-                        spaceInfo.poseInActionSpace = {{0,0,0,1},{0,0,0}};
+                        XrActionSpaceCreateInfo actionSpaceInfo{ XR_TYPE_ACTION_SPACE_CREATE_INFO };
+                        actionSpaceInfo.action = m_input.poseAction;
+                        actionSpaceInfo.poseInActionSpace.orientation.w = 1.f;
+                        actionSpaceInfo.subactionPath = m_input.handSubactionPath[Side::LEFT];
+                        CHECK_XR_RESULT(xrCreateActionSpace(session, &actionSpaceInfo, &m_input.handSpace[Side::LEFT]), "Failed to create left hand action space");
+                        actionSpaceInfo.subactionPath = m_input.handSubactionPath[Side::RIGHT];
+                        CHECK_XR_RESULT(xrCreateActionSpace(session, &actionSpaceInfo, &m_input.handSpace[Side::RIGHT]), "Failed to create right hand action space");
 
-                        spaceInfo.action = leftHandPoseAction;
-                        spaceInfo.subactionPath = leftHandPath;
-                        CHECK_XR_RESULT(xrCreateActionSpace(session, &spaceInfo, &leftHandSpace), "Failed to create left hand space");
+                        // Attach action set
+                        XrSessionActionSetsAttachInfo attachInfo{XR_TYPE_SESSION_ACTION_SETS_ATTACH_INFO};
+                        attachInfo.countActionSets = 1;
+                        attachInfo.actionSets = &m_input.actionSet;
+                        CHECK_XR_RESULT(xrAttachSessionActionSets(session, &attachInfo), "Failed to attach session action sets");
 
-                        spaceInfo.action = rightHandPoseAction;
-                        spaceInfo.subactionPath = rightHandPath;
-                        CHECK_XR_RESULT(xrCreateActionSpace(session, &spaceInfo, &rightHandSpace), "Failed to create right hand space");
+                        // Log active interaction profiles for each hand
+                        for (auto hand : {Side::LEFT, Side::RIGHT}) {
+                            XrInteractionProfileState prof{XR_TYPE_INTERACTION_PROFILE_STATE};
+                            XrResult gp = xrGetCurrentInteractionProfile(session, m_input.handSubactionPath[hand], &prof);
+                            if (XR_SUCCEEDED(gp) && prof.interactionProfile != XR_NULL_PATH) {
+                                // We can't easily convert path to string without extension; just note presence
+                                std::cout << "Hand " << (hand == Side::LEFT ? "Left" : "Right") << ": interaction profile active.\n";
+                            } else {
+                                std::cout << "Hand " << (hand == Side::LEFT ? "Left" : "Right") << ": no interaction profile active yet.\n";
+                            }
+                        }
 
                         sessionRunning = true;
                     }
@@ -293,55 +346,73 @@ int main() {
          // ------------------------
         // Sync action sets
         // ------------------------
-        XrActiveActionSet activeSet{ actionSet };
+        m_input.handActive = {{XR_FALSE, XR_FALSE}};
+        const XrActiveActionSet activeActionSet{ m_input.actionSet, XR_NULL_PATH };
         XrActionsSyncInfo syncInfo{ XR_TYPE_ACTIONS_SYNC_INFO };
         syncInfo.countActiveActionSets = 1;
-        syncInfo.activeActionSets = &activeSet;
-        xrSyncActions(session, &syncInfo);
+        syncInfo.activeActionSets = &activeActionSet;
+        CHECK_XR_RESULT(xrSyncActions(session, &syncInfo), "Failed to sync actions");
 
         // ------------------------
         // Get controller action states
         // ------------------------
-        auto getPoseState = [&](XrAction action, XrPath path) -> bool {
-            XrActionStateGetInfo getInfo{ XR_TYPE_ACTION_STATE_GET_INFO };
-            getInfo.action = action;
-            getInfo.subactionPath = path;
-            XrActionStatePose poseState{ XR_TYPE_ACTION_STATE_POSE };
-            xrGetActionStatePose(session, &getInfo, &poseState);
-            return poseState.isActive == XR_TRUE;
-        };
+        for (auto hand : {Side::LEFT, Side::RIGHT}) {
+            XrActionStateGetInfo getInfo{XR_TYPE_ACTION_STATE_GET_INFO};
+            getInfo.action = m_input.poseAction;
+            getInfo.subactionPath = m_input.handSubactionPath[hand];
+            XrActionStatePose poseState{XR_TYPE_ACTION_STATE_POSE};
+            CHECK_XR_RESULT(xrGetActionStatePose(session, &getInfo, &poseState), "Failed to get action state pose");
+            m_input.handActive[hand] = poseState.isActive;
 
-        bool leftActive  = getPoseState(leftHandPoseAction, leftHandPath);
-        bool rightActive = getPoseState(rightHandPoseAction, rightHandPath);
-
-        // ------------------------
-        // Locate controller spaces if active
-        // ------------------------
-        auto printController = [&](const char* name, XrSpace space, bool active) {
-            XrSpaceLocation loc{ XR_TYPE_SPACE_LOCATION };
-            if (active) {
-                xrLocateSpace(space, referenceSpace, frameState.predictedDisplayTime, &loc);
+            if (!poseState.isActive) {
+                std::cout << "Controller " << (hand == Side::LEFT ? "Left" : "Right") << " pose action not active (controller off or not bound).\n";
+                continue;
             }
 
-            if (!active || !(loc.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT)) {
-                std::cout << name << " Pos: INVALID";
+            // List bound sources (diagnostic): which inputs are bound to this action?
+            XrBoundSourcesForActionEnumerateInfo bsInfo{XR_TYPE_BOUND_SOURCES_FOR_ACTION_ENUMERATE_INFO};
+            bsInfo.action = m_input.poseAction;
+            uint32_t sourceCount = 0;
+            xrEnumerateBoundSourcesForAction(session, &bsInfo, 0, &sourceCount, nullptr);
+            std::vector<XrPath> sources(sourceCount);
+            if (sourceCount > 0) {
+                xrEnumerateBoundSourcesForAction(session, &bsInfo, sourceCount, &sourceCount, sources.data());
+                for (auto p : sources) {
+                    char buf[256] = {};
+                    uint32_t outLen = 0;
+                    if (XR_SUCCEEDED(xrPathToString(instance, p, (uint32_t)sizeof(buf), &outLen, buf))) {
+                        std::cout << "Bound source: " << buf << "\n";
+                    }
+                }
+            }
+
+            XrSpaceLocation spaceLocation{XR_TYPE_SPACE_LOCATION};
+            XrResult res = xrLocateSpace(m_input.handSpace[hand], referenceSpace, frameState.predictedDisplayTime, &spaceLocation);
+            if ((spaceLocation.locationFlags & XR_SPACE_LOCATION_POSITION_VALID_BIT) != 0 &&
+                (spaceLocation.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT) != 0) {
+                // print the controller pose
+                XrVector3f pos = spaceLocation.pose.position;
+                XrQuaternionf ori = spaceLocation.pose.orientation;
+                std::cout << "Controller " << (hand == Side::LEFT ? "Left" : "Right") << " Pos: ("
+                            << pos.x << "," << pos.y << "," << pos.z << ") "
+                            << "Ori: (" << ori.x << "," << ori.y << "," << ori.z << "," << ori.w << ")\n";
             } else {
-                auto& p = loc.pose.position;
-                std::cout << name << " Pos: (" << p.x << "," << p.y << "," << p.z << ")";
+                // Pose not valid: print flags for diagnosis
+                std::cout << "Controller " << (hand == Side::LEFT ? "Left" : "Right")
+                          << " pose not valid. res=" << res
+                          << " flags=0x" << std::hex << spaceLocation.locationFlags << std::dec
+                          << " (need POSITION_VALID and ORIENTATION_VALID).\n";
             }
 
-            if (!active || !(loc.locationFlags & XR_SPACE_LOCATION_ORIENTATION_VALID_BIT)) {
-                std::cout << " Ori: INVALID\n";
-            } else {
-                auto& o = loc.pose.orientation;
-                std::cout << " Ori: (" << o.x << "," << o.y << "," << o.z << "," << o.w << ")\n";
-            }
-        };
+        }
 
-        printController("Left Controller", leftHandSpace, leftActive);
-        printController("Right Controller", rightHandSpace, rightActive);
-
-        xrEndFrame(session, nullptr);
+        // Submit an empty frame (no layers) to keep the runtime happy
+        XrFrameEndInfo endInfo{XR_TYPE_FRAME_END_INFO};
+        endInfo.displayTime = frameState.predictedDisplayTime;
+        endInfo.environmentBlendMode = XR_ENVIRONMENT_BLEND_MODE_OPAQUE;
+        endInfo.layerCount = 0;
+        endInfo.layers = nullptr;
+        xrEndFrame(session, &endInfo);
         std::this_thread::sleep_for(std::chrono::milliseconds(50));
     }
 

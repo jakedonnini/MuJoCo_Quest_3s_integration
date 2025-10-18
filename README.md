@@ -3,7 +3,7 @@ The goal is to create easy to use tools to allow a person to enter a MuJoCo scen
 
 # my setup (Delete for full release)
 1. ssh jaked@DESKTOP-HSTA4V5
-2. cd \OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\build\
+2. cd OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\build
 3. cmake .. -G "Visual Studio 17 2022"
 4. cmake --build . --config Debug
 5. .\Debug\VR_Test_Scene.exe
