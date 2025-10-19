@@ -234,9 +234,12 @@ int main() {
                 { m_input.poseAction, rightAimPath }
             };
         } else {
+            // Bind both grip and aim poses for robustness on Oculus/Meta
             bindings = {
                 { m_input.poseAction, leftGripPath },
-                { m_input.poseAction, rightGripPath }
+                { m_input.poseAction, rightGripPath },
+                { m_input.poseAction, leftAimPath },
+                { m_input.poseAction, rightAimPath }
             };
         }
         XrInteractionProfileSuggestedBinding suggested{ XR_TYPE_INTERACTION_PROFILE_SUGGESTED_BINDING };
@@ -347,10 +350,14 @@ int main() {
         // Sync action sets
         // ------------------------
         m_input.handActive = {{XR_FALSE, XR_FALSE}};
-        const XrActiveActionSet activeActionSet{ m_input.actionSet, XR_NULL_PATH };
+        // Explicitly sync left and right subaction paths to ensure both hands become active
+        XrActiveActionSet activeSets[2] = {
+            { m_input.actionSet, m_input.handSubactionPath[Side::LEFT] },
+            { m_input.actionSet, m_input.handSubactionPath[Side::RIGHT] }
+        };
         XrActionsSyncInfo syncInfo{ XR_TYPE_ACTIONS_SYNC_INFO };
-        syncInfo.countActiveActionSets = 1;
-        syncInfo.activeActionSets = &activeActionSet;
+        syncInfo.countActiveActionSets = 2;
+        syncInfo.activeActionSets = activeSets;
         CHECK_XR_RESULT(xrSyncActions(session, &syncInfo), "Failed to sync actions");
 
         // ------------------------
