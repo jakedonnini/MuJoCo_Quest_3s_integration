@@ -1,14 +1,19 @@
 cmake_minimum_required(VERSION 3.15)
-project(MuJoCo_Quest3_OpenXR LANGUAGES CXX)
+project(MuJoCo_Quest3_OpenXR LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
+# Use the DLL MSVC runtime consistently to avoid LNK4098 mismatch warnings
+if(MSVC)
+    # Use /MD for Release and /MDd for Debug
+    set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreaded$<$<CONFIG:Debug>:Debug>DLL")
+endif()
 
 # Dependency acquisition options for MuJoCo_VR_Main integration
 option(USE_VCPKG "Use vcpkg for dependency resolution (GLFW/Eigen)" OFF)
 option(USE_FETCHCONTENT "Use FetchContent to fetch dependencies (GLFW/Eigen)" OFF)
 option(DOWNLOAD_MUJOCO "Download MuJoCo automatically if not found" OFF)
-option(ENABLE_MUJOCO_VIEWER "Create GLFW/OpenGL MuJoCo viewer window (may conflict with OpenXR D3D11)" OFF)
 
 # Optional local dependency roots (set these if deps live next to this CMake)
 set(GLFW_DIR "" CACHE PATH "Path to GLFW root (contains include and lib/lib-vc2022)")
@@ -79,6 +84,10 @@ endif()
 
 message(STATUS "Using OpenXR include: ${OPENXR_INCLUDE_DIR}")
 message(STATUS "Using OpenXR library: ${OPENXR_LIBRARY}")
+
+# Persist detected OpenXR paths back into the cache so subdirectories can consume them
+set(OPENXR_INCLUDE_DIR "${OPENXR_INCLUDE_DIR}" CACHE PATH "Path to OpenXR include directory (containing openxr/openxr.h)" FORCE)
+set(OPENXR_LIBRARY "${OPENXR_LIBRARY}" CACHE FILEPATH "Path to OpenXR loader library (import lib) e.g. openxr_loader.lib" FORCE)
 
 add_executable(VR_Test_Scene
     VR_Test_Scene.cpp
@@ -368,9 +377,14 @@ if (WIN32)
         ${INCLUDE_DIR}/platformplugin_factory.cpp
         ${INCLUDE_DIR}/platformplugin_win32.cpp
         ${INCLUDE_DIR}/graphicsplugin_factory.cpp
-        ${INCLUDE_DIR}/graphicsplugin_d3d11.cpp
+        # ${INCLUDE_DIR}/graphicsplugin_d3d11.cpp
+            ${INCLUDE_DIR}/graphicsplugin_opengl.cpp
         ${INCLUDE_DIR}/d3d_common.cpp
         ${INCLUDE_DIR}/logger.cpp
+        # OpenGL support deps
+        ${CMAKE_CURRENT_SOURCE_DIR}/gfxwrapper/gfxwrapper_opengl.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/gl.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/wgl.c
     )
 
     # Includes: OpenXR headers, your root, HelloXR sample src (for graphicsplugin.h etc), and 'src' for common/xr_linear.h
@@ -378,6 +392,8 @@ if (WIN32)
         ${OPENXR_INCLUDE_PARENT}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/gfxwrapper
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/include
         # ${HELLOXR_SRC_DIR}
         # ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src
     )
@@ -385,7 +401,8 @@ if (WIN32)
     # Required platform/graphics defines
     target_compile_definitions(OpenXR_HelloWin PRIVATE
         XR_USE_PLATFORM_WIN32
-        XR_USE_GRAPHICS_API_D3D11
+        # XR_USE_GRAPHICS_API_D3D11
+            XR_USE_GRAPHICS_API_OPENGL
         WIN32_LEAN_AND_MEAN
         _CRT_SECURE_NO_WARNINGS
     )
@@ -393,15 +410,22 @@ if (WIN32)
     # Link OpenXR loader + D3D11 stack
     target_link_libraries(OpenXR_HelloWin PRIVATE
         ${OPENXR_LIBRARY}
-        d3d11
+        # d3d11
         dxgi
         d3dcompiler
         gdi32
         user32
+            OpenGL::GL
     )
 
     set_target_properties(OpenXR_HelloWin PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    message(STATUS "Configured target 'OpenXR_HelloWin' with D3D11 + Win32 using HelloXR support files.")
+    message(STATUS "Configured target 'OpenXR_HelloWin' with OpenGL + Win32 using HelloXR support files.")
+
+    # ------------------------------------------------------------------------
+    # Standalone OpenGL sample: use the example's own CMake in subdirectory
+    # OPENXR_INCLUDE_DIR and OPENXR_LIBRARY from this root are visible to the subdir.
+    # ------------------------------------------------------------------------
+    add_subdirectory(${CMAKE_CURRENT_SOURCE_DIR}/open_XR_GL/OpenXR-OpenGL-Example)
 
     # Alternate app target that uses MuJoCo_VR_Main.cpp as entry point
     add_executable(OpenXR_MuJoCoWin
@@ -412,29 +436,36 @@ if (WIN32)
         ${INCLUDE_DIR}/platformplugin_factory.cpp
         ${INCLUDE_DIR}/platformplugin_win32.cpp
         ${INCLUDE_DIR}/graphicsplugin_factory.cpp
-        ${INCLUDE_DIR}/graphicsplugin_d3d11.cpp
+        # ${INCLUDE_DIR}/graphicsplugin_d3d11.cpp
+            ${INCLUDE_DIR}/graphicsplugin_opengl.cpp
         ${INCLUDE_DIR}/d3d_common.cpp
         ${INCLUDE_DIR}/logger.cpp
+        # OpenGL support deps
+        ${CMAKE_CURRENT_SOURCE_DIR}/gfxwrapper/gfxwrapper_opengl.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/gl.c
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/wgl.c
     )
 
     target_include_directories(OpenXR_MuJoCoWin PRIVATE
         ${OPENXR_INCLUDE_PARENT}
         ${CMAKE_CURRENT_SOURCE_DIR}
         ${INCLUDE_DIR}
+        ${CMAKE_CURRENT_SOURCE_DIR}/gfxwrapper
+        ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/include
     )
 
     target_compile_definitions(OpenXR_MuJoCoWin PRIVATE
         XR_USE_PLATFORM_WIN32
-        XR_USE_GRAPHICS_API_D3D11
+        # XR_USE_GRAPHICS_API_D3D11
+            XR_USE_GRAPHICS_API_OPENGL
         WIN32_LEAN_AND_MEAN
         _CRT_SECURE_NO_WARNINGS
         PROJECT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}"
-        ENABLE_MUJOCO_VIEWER=$<IF:$<BOOL:${ENABLE_MUJOCO_VIEWER}>,1,0>
     )
 
     target_link_libraries(OpenXR_MuJoCoWin PRIVATE
         ${OPENXR_LIBRARY}
-        d3d11
+        # d3d11
         dxgi
         d3dcompiler
         gdi32
@@ -447,7 +478,85 @@ if (WIN32)
     )
 
     set_target_properties(OpenXR_MuJoCoWin PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}")
-    message(STATUS "Configured target 'OpenXR_MuJoCoWin' with D3D11 + Win32 using HelloXR support files.")
+    message(STATUS "Configured target 'OpenXR_MuJoCoWin' with OpenGL + Win32 using HelloXR support files.")
+
+    # ------------------------------------------------------------------------
+    # OpenVR (SteamVR) - build a small bridge lib from OpenVR_Bridge.cpp
+    # Looks for headers (openvr.h) and lib (openvr_api.lib) in common locations
+    # including a local 'steamvr' folder in the repo if present.
+    # ------------------------------------------------------------------------
+    set(OPENVR_INCLUDE_DIR "" CACHE PATH "Path to OpenVR include directory (contains openvr.h or headers/openvr.h)")
+    set(OPENVR_LIBRARY "" CACHE FILEPATH "Path to OpenVR import library (openvr_api.lib)")
+
+    if(NOT OPENVR_INCLUDE_DIR)
+        find_path(OPENVR_INCLUDE_DIR
+            NAMES openvr.h headers/openvr.h
+            PATHS
+                "$ENV{OPENVR_DIR}/headers"
+                ${OPENVR_DIR}/headers
+                ${CMAKE_CURRENT_SOURCE_DIR}/steamvr/headers
+                ${CMAKE_CURRENT_SOURCE_DIR}/openvr/headers
+                "C:/Program Files (x86)/Steam/steamapps/common/SteamVR/sdk/headers"
+                "C:/Program Files/OpenVR/include"
+                "C:/OpenVR/include"
+        )
+    endif()
+
+    if(NOT OPENVR_LIBRARY)
+        find_library(OPENVR_LIBRARY
+            NAMES openvr_api
+            PATHS
+                "$ENV{OPENVR_DIR}/lib/win64"
+                ${OPENVR_DIR}/lib/win64
+                ${CMAKE_CURRENT_SOURCE_DIR}/steamvr/lib/win64
+                ${CMAKE_CURRENT_SOURCE_DIR}/openvr/lib/win64
+                "C:/Program Files (x86)/Steam/steamapps/common/SteamVR/sdk/lib/win64"
+                "C:/Program Files/OpenVR/lib/win64"
+        )
+    endif()
+
+    if(OPENVR_INCLUDE_DIR AND OPENVR_LIBRARY)
+        message(STATUS "Using OpenVR include: ${OPENVR_INCLUDE_DIR}")
+        message(STATUS "Using OpenVR library: ${OPENVR_LIBRARY}")
+
+        # Build a small static library for the bridge so multiple apps can link it
+        add_library(OpenVRBridge STATIC
+            ${CMAKE_CURRENT_SOURCE_DIR}/OpenVR_Bridge.cpp
+            ${CMAKE_CURRENT_SOURCE_DIR}/OpenVR_Bridge.h
+        )
+        target_include_directories(OpenVRBridge PUBLIC
+            ${OPENVR_INCLUDE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}
+        )
+        target_link_libraries(OpenVRBridge PUBLIC ${OPENVR_LIBRARY})
+        target_compile_definitions(OpenVRBridge PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
+
+        # Link into the OpenXR_MuJoCoWin app (remove if you don't need it there)
+        target_link_libraries(OpenXR_MuJoCoWin PRIVATE OpenVRBridge)
+
+        # Try to copy openvr_api.dll next to the executable in MSVC builds
+        if(MSVC)
+            # Guess DLL path from library path
+            get_filename_component(OPENVR_LIB_DIR ${OPENVR_LIBRARY} DIRECTORY)
+            find_file(OPENVR_DLL
+                NAMES openvr_api.dll
+                PATHS ${OPENVR_LIB_DIR} ${OPENVR_LIB_DIR}/.. ${OPENVR_LIB_DIR}/../bin ${OPENVR_LIB_DIR}/../../bin
+            )
+            if(OPENVR_DLL)
+                add_custom_command(TARGET OpenXR_MuJoCoWin POST_BUILD
+                    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                        "${OPENVR_DLL}"
+                        $<TARGET_FILE_DIR:OpenXR_MuJoCoWin>
+                    COMMENT "Copying OpenVR DLL to output directory"
+                )
+                message(STATUS "Will copy OpenVR DLL: ${OPENVR_DLL}")
+            else()
+                message(WARNING "OpenVR DLL (openvr_api.dll) not found near the lib; you may need to copy it next to the exe manually.")
+            endif()
+        endif()
+    else()
+        message(WARNING "OpenVR not found. Set OPENVR_INCLUDE_DIR and OPENVR_LIBRARY to build OpenVR_Bridge.")
+    endif()
 
     # Copy MuJoCo DLL to output on Windows (best effort)
     if(MSVC)
