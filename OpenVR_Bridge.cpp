@@ -32,13 +32,14 @@ AllPoses OpenVRBridge::poll_vr() {
     vr::TrackedDevicePose_t trackedDevicePose[k_unMaxTrackedDeviceCount];
     vr::VRCompositor()->WaitGetPoses(trackedDevicePose, k_unMaxTrackedDeviceCount, nullptr, 0);
 
+    // get head pose
     if (trackedDevicePose[k_unTrackedDeviceIndex_Hmd].bPoseIsValid) {
         const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
 
         // Extract position
-        pose.position[0] = mat.m[0][3];
-        pose.position[1] = mat.m[1][3];
-        pose.position[2] = mat.m[2][3];
+        allPoses.hmdPose.position[0] = mat.m[0][3];
+        allPoses.hmdPose.position[1] = mat.m[1][3];
+        allPoses.hmdPose.position[2] = mat.m[2][3];
 
         // Extract orientation (quaternion)
         float qw = sqrt(fmax(0, 1 + mat.m[0][0] + mat.m[1][1] + mat.m[2][2])) / 2;
@@ -49,15 +50,19 @@ AllPoses OpenVRBridge::poll_vr() {
         qy = copysign(qy, mat.m[0][2] - mat.m[2][0]);
         qz = copysign(qz, mat.m[1][0] - mat.m[0][1]);
 
-        pose.orientation[0] = qx;
-        pose.orientation[1] = qy;
-        pose.orientation[2] = qz;
-        pose.orientation[3] = qw;
+        allPoses.hmdPose.orientation[0] = qx;
+        allPoses.hmdPose.orientation[1] = qy;
+        allPoses.hmdPose.orientation[2] = qz;
+        allPoses.hmdPose.orientation[3] = qw;
 
-        pose.valid = true;
+        allPoses.hmdPose.valid = true;
     } else {
-        pose.valid = false;
+        allPoses.hmdPose.valid = false;
     }
+
+    // TODO: get controller poses similarly and fill allPoses.leftControllerPose and allPoses.rightControllerPose
+
+    return allPoses;
 }
 
 void OpenVRBridge::shutdown_vr() {

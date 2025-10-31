@@ -4,13 +4,25 @@ The goal is to create easy to use tools to allow a person to enter a MuJoCo scen
 # my setup (Delete for full release)
 1. ssh jaked@DESKTOP-HSTA4V5 (woodstown5)
 2. cd OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\build
-3. cmake .. -G "Visual Studio 17 2022"
-4. cmake --build . --config Debug
-5. .\Debug\VR_Test_Scene.exe
+3. cmake .. -G "Visual Studio 17 2022" -D USE_OPENXR=OFF \
+   -D OPENVR_INCLUDE_DIR="C:\\Users\\jaked\\OneDrive\\Documents\\Mujoco_VR\\MuJoCo_Quest_3s_integration\\steamvr\\openvr\\headers" \
+   -D OPENVR_LIBRARY="C:\\Users\\jaked\\OneDrive\\Documents\\Mujoco_VR\\MuJoCo_Quest_3s_integration\\steamvr\\openvr\\lib\\win64\\openvr_api.lib"
+4. cmake --build . --config Debug --target MuJoCo_VR_Main_OpenVR
+5. .\Debug\MuJoCo_VR_Main_OpenVR.exe
 
-# How to intall
+# From your repo root or the samples folder:
+cd C:\Users\jaked\OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\steamvr\openvr\samples
+
+cmake -S . -B build -G "Visual Studio 17 2022" -DBUILD_QT_SAMPLES=OFF
+cmake --build build --config Debug --target hellovr_opengl
+
+# How to install / run
 1. Install the Meta Horizon Link App on your PC
-2. Install OpenXR Tools for windows and insure the quest is in the current runtime
+2. Install Steam and SteamVR. Start SteamVR before launching the app.
+3. Ensure the Quest is connected via Horizon Link and recognized by SteamVR.
+4. If the app says openvr_api.dll is missing, copy it from: 
+   - `C:\\Program Files (x86)\\Steam\\steamapps\\common\\SteamVR\\bin\\win64\\openvr_api.dll` into your build `Debug` folder
+5. Ensure the MuJoCo model XML exists at the hardcoded path in `MuJoCo_VR_Main.cpp` (change `MODEL_XML` if needed).
 
 # Pipeline
 XR Runtime (OpenXR) 
@@ -29,28 +41,9 @@ XR Compositor (xrEndFrame)
    - Submit two rendered images (one per eye)
 
 # Notes
-[16:56:53.871][Info   ] Available reference spaces: 3
-[16:56:53.878][Info   ] System Properties: Name=Meta Quest 3S VendorId=-11714
-[16:56:53.879][Info   ] System Graphics Properties: MaxWidth=4096 MaxHeight=4096 MaxLayers=16
-[16:56:53.880][Info   ] System Tracking Properties: OrientationTracking=True PositionTracking=True
-[16:56:53.881][Info   ] Creating swapchain for view 0 with dimensions Width=1568 Height=1600 SampleCount=1
-[16:56:53.899][Info   ] Creating swapchain for view 1 with dimensions Width=1568 Height=1600 SampleCount=1
-[16:56:53.905][Info   ] XrEventDataSessionStateChanged: state XR_SESSION_STATE_UNKNOWN->XR_SESSION_STATE_IDLE session=2
-time=24635504732800
-[16:56:53.906][Info   ] XrEventDataSessionStateChanged: state XR_SESSION_STATE_IDLE->XR_SESSION_STATE_READY session=2 ti
-me=24635504749699
-[16:56:53.926][Info   ] XrEventDataSessionStateChanged: state XR_SESSION_STATE_READY->XR_SESSION_STATE_SYNCHRONIZED sess
-ion=2 time=24635603462299
-[16:56:55.051][Info   ] XrEventDataSessionStateChanged: state XR_SESSION_STATE_SYNCHRONIZED->XR_SESSION_STATE_VISIBLE se
-ssion=2 time=24636728942200
-[16:56:55.052][Info   ] XrEventDataSessionStateChanged: state XR_SESSION_STATE_VISIBLE->XR_SESSION_STATE_FOCUSED session
-=2 time=24636728997799
-[16:56:57.647][Info   ] Grab action is bound to 'Left Hand Meta Quest Touch Plus Squeeze' and 'Right Hand Meta Quest Tou
-ch Plus Squeeze'
-[16:56:57.647][Info   ] Quit action is bound to 'Left Hand Meta Quest Touch Plus Menu Button'
-[16:56:57.651][Info   ] Pose action is bound to 'Left Hand Meta Quest Touch Plus Grip Pose' and 'Right Hand Meta Quest T
-ouch Plus Grip Pose'
-[16:56:57.652][Info   ] Vibrate action is bound to 'Left Hand Meta Quest Touch Plus Vibration' and 'Right Hand Meta Ques
-t Touch Plus Vibration'
-
-PS C:\Users\jaked\OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\build> 63
+PS C:\Users\jaked\OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\build> .\Debug\OpenXR_GL.exe                 Press any key to shutdown...
+Error [GENERAL | xrCreateInstance | OpenXR-Loader] : LoaderInstance::CreateInstance chained CreateInstance call failed
+Error [GENERAL | xrCreateInstance | OpenXR-Loader] : xrCreateInstance failed
+XrResult failure [XR_ERROR_API_VERSION_UNSUPPORTED]
+    Origin: xrCreateInstance(&createInfo, &g_instance)
+    Source: C:\Users\jaked\OneDrive\Documents\Mujoco_VR\MuJoCo_Quest_3s_integration\openxr_gl.cpp:532

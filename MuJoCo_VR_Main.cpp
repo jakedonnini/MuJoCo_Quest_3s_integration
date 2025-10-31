@@ -1,103 +1,11 @@
-#include "pch.h"
-#include "common.h"
-#include "options.h"
-#include "platformdata.h"
-#include "platformplugin.h"
-#include "graphicsplugin.h"
-#include "openxr_program.h"
+#include <iostream>
+#include <vector>
+#include <cmath>
 #include "mujoco/mujoco.h"
 #include "kinematics.h"
 #include <GLFW/glfw3.h>
-
-#if defined(_WIN32)
-// Favor the high performance NVIDIA or AMD GPUs
-extern "C" {
-// http://developer.download.nvidia.com/devzone/devcenter/gamegraphics/files/OptimusRenderingPolicies.pdf
-__declspec(dllexport) DWORD NvOptimusEnablement = 0x00000001;
-// https://gpuopen.com/learn/amdpowerxpressrequesthighperformance/
-__declspec(dllexport) DWORD AmdPowerXpressRequestHighPerformance = 0x00000001;
-}
-#endif  // defined(_WIN32)
-
-namespace {
-void ShowHelp() {
-    // TODO: Improve/update when things are more settled.
-    Log::Write(Log::Level::Info,
-               "HelloXr --graphics|-g <Graphics API> [--formfactor|-ff <Form factor>] [--viewconfig|-vc <View config>] "
-               "[--blendmode|-bm <Blend mode>] [--space|-s <Space>] [--verbose|-v]");
-    Log::Write(Log::Level::Info, "Graphics APIs:            D3D11, D3D12, OpenGLES, OpenGL, Vulkan2, Vulkan, Metal");
-    Log::Write(Log::Level::Info, "Form factors:             Hmd, Handheld");
-    Log::Write(Log::Level::Info, "View configurations:      Mono, Stereo");
-    Log::Write(Log::Level::Info, "Environment blend modes:  Opaque, Additive, AlphaBlend");
-    Log::Write(Log::Level::Info, "Spaces:                   View, Local, Stage");
-}
-
-bool UpdateOptionsFromCommandLine(Options& options, int argc, char* argv[]) {
-    // Provide a sensible default on Windows so users can run without args
-#if defined(_WIN32)
-    if (options.GraphicsPlugin.empty()) {
-        options.GraphicsPlugin = "D3D11";
-    }
-#endif
-
-    int i = 1;  // Index 0 is the program name and is skipped.
-
-    auto getNextArg = [&] {
-        if (i >= argc) {
-            throw std::invalid_argument("Argument parameter missing");
-        }
-
-        return std::string(argv[i++]);
-    };
-
-    while (i < argc) {
-        const std::string arg = getNextArg();
-        if (EqualsIgnoreCase(arg, "--graphics") || EqualsIgnoreCase(arg, "-g")) {
-            options.GraphicsPlugin = getNextArg();
-        } else if (EqualsIgnoreCase(arg, "--formfactor") || EqualsIgnoreCase(arg, "-ff")) {
-            options.FormFactor = getNextArg();
-        } else if (EqualsIgnoreCase(arg, "--viewconfig") || EqualsIgnoreCase(arg, "-vc")) {
-            options.ViewConfiguration = getNextArg();
-        } else if (EqualsIgnoreCase(arg, "--blendmode") || EqualsIgnoreCase(arg, "-bm")) {
-            options.EnvironmentBlendMode = getNextArg();
-        } else if (EqualsIgnoreCase(arg, "--space") || EqualsIgnoreCase(arg, "-s")) {
-            options.AppSpace = getNextArg();
-        } else if (EqualsIgnoreCase(arg, "--verbose") || EqualsIgnoreCase(arg, "-v")) {
-            Log::SetLevel(Log::Level::Verbose);
-        } else if (EqualsIgnoreCase(arg, "--help") || EqualsIgnoreCase(arg, "-h")) {
-            ShowHelp();
-            return false;
-        } else {
-            throw std::invalid_argument(Fmt("Unknown argument: %s", arg.c_str()));
-        }
-    }
-
-    // If still empty here, require GraphicsPlugin
-    if (options.GraphicsPlugin.empty()) {
-        Log::Write(Log::Level::Error, "GraphicsPlugin parameter is required");
-        ShowHelp();
-        return false;
-    }
-
-    try {
-        options.ParseStrings();
-    } catch (std::invalid_argument& ia) {
-        Log::Write(Log::Level::Error, ia.what());
-        ShowHelp();
-        return false;
-    }
-    Log::Write(Log::Level::Info, Fmt("Using GraphicsPlugin: %s", options.GraphicsPlugin.c_str()));
-    return true;
-}
-}  // namespace
-
-
-
-// Suppress warnings from external libraries
-#ifdef _MSC_VER
-#pragma warning(push)
-#pragma warning(disable: 4127) // conditional expression is constant (Eigen)
-#endif
+#include <thread>
+#include "OpenVR_Bridge.h"
 
 #define M_PI 3.14159265358979323846
 
@@ -141,6 +49,8 @@ void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
 
 // basic implementation just to build for now
 int main() {
+    std::cout << "MuJoCo VR Integration\n";
+
     char error_msg[1000] = "Could not load XML";
     mjModel* m = mj_loadXML(MODEL_XML, NULL, error_msg, sizeof(error_msg));
     if (!m) { std::cerr << "Failed to load model: " << error_msg << std::endl; return 1; }
@@ -204,14 +114,10 @@ int main() {
     Eigen::Vector<double, controlled_dofs> u;
     Eigen::Vector<double, controlled_dofs> dq;
 
-    // varibles for VR
-    std::shared_ptr<Options> options = std::make_shared<Options>();
-    std::shared_ptr<PlatformData> data = std::make_shared<PlatformData>();
-
     // Spawn a thread to wait for a keypress
     static bool quitKeyPressed = false;
     auto exitPollingThread = std::thread{[] {
-        Log::Write(Log::Level::Info, "Press any key to shutdown...");
+        std::cout << "Press Enter to quit...\n";
         (void)getchar();
         quitKeyPressed = true;
     }};
@@ -219,36 +125,26 @@ int main() {
 
     bool requestRestart = false;
 
+
+    // declare OpenVR bridge
+    OpenVRBridge vrBridge;
+    AllPoses vrPoses;
+
     do {
-        // Create platform-specific implementation.
-        std::shared_ptr<IPlatformPlugin> platformPlugin = CreatePlatformPlugin(options, data);
 
-        // Create graphics API implementation.
-        std::shared_ptr<IGraphicsPlugin> graphicsPlugin = CreateGraphicsPlugin(options, platformPlugin);
+        if (!vrBridge.init_vr()) {
+            std::cerr << "Failed to initialize OpenVR.\n";
+            break;
+        }
 
-        // Initialize the OpenXR program.
-        std::shared_ptr<IOpenXrProgram> program = CreateOpenXrProgram(options, platformPlugin, graphicsPlugin);
-
-        program->CreateInstance();
-        program->InitializeSystem();
-
-        options->SetEnvironmentBlendMode(program->GetPreferredBlendMode());
-        // UpdateOptionsFromCommandLine(*options, argc, argv);
-        platformPlugin->UpdateOptions(options);
-        graphicsPlugin->UpdateOptions(options);
-
-        program->InitializeDevice();
-        program->InitializeSession();
-        program->CreateSwapchains();
 
         while (!quitKeyPressed) {
             bool exitRenderLoop = false;
-            program->PollEvents(&exitRenderLoop, &requestRestart);
             if (exitRenderLoop) {
                 break;
             }
 
-            if (program->IsSessionRunning()) {
+            if (true) {
 
                 // MuJoCo control loop
                 for (int i=0;i<m->nv;i++) d->qfrc_applied[i] = 0.0;
@@ -267,18 +163,19 @@ int main() {
 
                 // q_target += dq_step; // scale step size
 
-                program->PollActions();
-                program->RenderFrame();
-                // print head and hands pos to terminal
-                VRTrackingState trackingState = program->GetTrackingState();
-                std::cout << "Head Position: " << trackingState.head.position.x << ", " << trackingState.head.position.y << ", " << trackingState.head.position.z << std::endl;
-                std::cout << "Head Orientation: " << trackingState.head.yawDeg << ", " << trackingState.head.pitchDeg << ", " << trackingState.head.rollDeg << std::endl;
-                for (int i = 0; i < Side::COUNT; ++i) {
-                    std::cout << "Hand " << (i == Side::LEFT ? "Left" : "Right") << " Position: " << trackingState.hand[i].position.x << ", " << trackingState.hand[i].position.y << ", " << trackingState.hand[i].position.z << std::endl;
-                    std::cout << "Hand " << (i == Side::LEFT ? "Left" : "Right") << " Orientation: " << trackingState.hand[i].yawDeg << ", " << trackingState.hand[i].pitchDeg << ", " << trackingState.hand[i].rollDeg << std::endl;
-                }
+                vrPoses = vrBridge.poll_vr();
 
-                std::cout << "q_current: " << q_current.transpose() << std::endl;
+                if (vrPoses.hmdPose.valid) {
+                    // Map HMD position to target position in simulation
+                    Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
+                                            vrPoses.hmdPose.position[1],
+                                            vrPoses.hmdPose.position[2]);
+                    // Simple scaling and offset for demo purposes
+                    // T_target(0,3) = hmd_pos.x() * 1.0;
+                    // T_target(1,3) = hmd_pos.y() * 1.0;
+                    // T_target(2,3) = hmd_pos.z() * 1.0 + 0.5; // offset above ground
+                    std::cout << "HMD Position: " << hmd_pos.transpose() << std::endl;
+                }
 
                 // finish MuJoCo control loop
                 for (int i = 0; i < controlled_dofs; ++i) {
@@ -306,6 +203,8 @@ int main() {
         }
     } while (!quitKeyPressed && requestRestart);
 
+    vrBridge.shutdown_vr();
+
     mjv_freeScene(&scn);
     mjr_freeContext(&con);
     glfwDestroyWindow(window);
@@ -316,7 +215,3 @@ int main() {
     std::cout << "Simulation closed.\n";
     return 0;
 }
-
-#ifdef _MSC_VER
-#pragma warning(pop)
-#endif

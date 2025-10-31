@@ -15,9 +15,6 @@ struct Pose {
     bool valid;
 };
 
-// Global instance declared in the .cpp (use extern here so other files can reference it).
-extern Pose pose;
-
 // Camera textures used by the example implementation.
 struct Camera {
     vr::Texture_t leftEyeTexture;
@@ -33,8 +30,6 @@ struct AllPoses {
     Pose leftControllerPose;
     Pose rightControllerPose;
 };
-
-extern AllPoses allPoses;
 
 // Small wrapper class declared/defined in OpenVR_Bridge.cpp
 class OpenVRBridge {
@@ -52,6 +47,11 @@ public:
     void shutdown_vr();
 
 private:
+    // Private container holding the HMD + controller poses. Default-initialized.
+    AllPoses allPoses{};
+
+
+
     vr::IVRSystem* vr_system = nullptr;
     vr::EVRInitError eError = vr::VRInitError_None;
 
