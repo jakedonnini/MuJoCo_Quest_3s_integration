@@ -3,6 +3,7 @@
 #include <openvr.h>
 #include <cmath>
 #include <iostream>
+#include <array>
 
 bool OpenVRBridge::init_vr() {
     eError = vr::VRInitError_None;
@@ -26,6 +27,48 @@ bool OpenVRBridge::init_vr() {
     return true;
 }
 
+std::array<float, 6> OpenVRBridge::getFrustum(int i) {
+    vr::EVREye eye = (i == 0) ? vr::Eye_Left : vr::Eye_Right;
+
+    float left, right, top, bottom;
+    vr_system->GetProjectionRaw(eye, &left, &right, &top, &bottom);
+
+    float frustum_center = (left + right) / 2.0f;
+    float frustum_width = right - left;
+
+    float nearClip = 0.1f; // Set near clip distance
+    float farClip = 100.0f; // Set far clip distance
+
+    std::array<float, 6> frustum = {frustum_center, frustum_width, bottom, top, nearClip, farClip};
+    return frustum;
+}
+
+Pose getPoseFromMatrix(const vr::HmdMatrix34_t& mat) {
+    Pose pose;
+
+    // Extract position
+    pose.position[0] = mat.m[0][3];
+    pose.position[1] = mat.m[1][3];
+    pose.position[2] = mat.m[2][3];
+
+    // Extract orientation (quaternion)
+    float qw = sqrt(fmax(0, 1 + mat.m[0][0] + mat.m[1][1] + mat.m[2][2])) / 2;
+    float qx = sqrt(fmax(0, 1 + mat.m[0][0] - mat.m[1][1] - mat.m[2][2])) / 2;
+    float qy = sqrt(fmax(0, 1 - mat.m[0][0] + mat.m[1][1] - mat.m[2][2])) / 2;
+    float qz = sqrt(fmax(0, 1 - mat.m[0][0] - mat.m[1][1] + mat.m[2][2])) / 2;
+    qx = copysign(qx, mat.m[2][1] - mat.m[1][2]);
+    qy = copysign(qy, mat.m[0][2] - mat.m[2][0]);
+    qz = copysign(qz, mat.m[1][0] - mat.m[0][1]);
+
+    pose.orientation[0] = qx;
+    pose.orientation[1] = qy;
+    pose.orientation[2] = qz;
+    pose.orientation[3] = qw;
+
+    pose.valid = true;
+    return pose;
+}
+
 AllPoses OpenVRBridge::poll_vr() {
     if (!vr_system) return {};
 
@@ -35,32 +78,27 @@ AllPoses OpenVRBridge::poll_vr() {
     // get head pose
     if (trackedDevicePose[k_unTrackedDeviceIndex_Hmd].bPoseIsValid) {
         const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Hmd].mDeviceToAbsoluteTracking;
-
-        // Extract position
-        allPoses.hmdPose.position[0] = mat.m[0][3];
-        allPoses.hmdPose.position[1] = mat.m[1][3];
-        allPoses.hmdPose.position[2] = mat.m[2][3];
-
-        // Extract orientation (quaternion)
-        float qw = sqrt(fmax(0, 1 + mat.m[0][0] + mat.m[1][1] + mat.m[2][2])) / 2;
-        float qx = sqrt(fmax(0, 1 + mat.m[0][0] - mat.m[1][1] - mat.m[2][2])) / 2;
-        float qy = sqrt(fmax(0, 1 - mat.m[0][0] + mat.m[1][1] - mat.m[2][2])) / 2;
-        float qz = sqrt(fmax(0, 1 - mat.m[0][0] - mat.m[1][1] + mat.m[2][2])) / 2;
-        qx = copysign(qx, mat.m[2][1] - mat.m[1][2]);
-        qy = copysign(qy, mat.m[0][2] - mat.m[2][0]);
-        qz = copysign(qz, mat.m[1][0] - mat.m[0][1]);
-
-        allPoses.hmdPose.orientation[0] = qx;
-        allPoses.hmdPose.orientation[1] = qy;
-        allPoses.hmdPose.orientation[2] = qz;
-        allPoses.hmdPose.orientation[3] = qw;
-
-        allPoses.hmdPose.valid = true;
+        // helper function to convert HmdMatrix34_t to Pose
+        allPoses.hmdPose = getPoseFromMatrix(mat);
     } else {
         allPoses.hmdPose.valid = false;
     }
 
-    // TODO: get controller poses similarly and fill allPoses.leftControllerPose and allPoses.rightControllerPose
+    // get left controller pose
+    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[0]].bPoseIsValid) {
+        const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Controller[0]].mDeviceToAbsoluteTracking;
+        allPoses.leftControllerPose = getPoseFromMatrix(mat);
+    } else {
+        allPoses.leftControllerPose.valid = false;
+    }
+
+    // get right controller pose
+    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[1]].bPoseIsValid) {
+        const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Controller[1]].mDeviceToAbsoluteTracking;
+        allPoses.rightControllerPose = getPoseFromMatrix(mat);
+    } else {
+        allPoses.rightControllerPose.valid = false;
+    }
 
     return allPoses;
 }

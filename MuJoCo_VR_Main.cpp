@@ -9,7 +9,8 @@
 
 #define M_PI 3.14159265358979323846
 
-mjvCamera cam1; 
+mjvGLCamera eyeCameras[2];   // Left/right VR eyes
+mjvCamera objCamera;       // Objective camera (monitor view) 
 mjvOption opt; 
 mjvScene scn; 
 mjrContext con; 
@@ -47,8 +48,52 @@ void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
     d->mocap_quat[4*body_id + 3] = 0.0;
 }
 
+void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight) {
+    // Left Eye
+    // mjv_updateScene(m, d, &opt, nullptr, &eyeCameras[0], mjCAT_ALL, &scn);
+    // mjrRect leftRect = {0, 0, windowWidth / 3, windowHeight};
+    // mjr_render(leftRect, &scn, &con);
+
+    // // Right Eye
+    // mjv_updateScene(m, d, &opt, nullptr, &eyeCameras[1], mjCAT_ALL, &scn);
+    // mjrRect rightRect = {windowWidth / 3, 0, windowWidth / 3, windowHeight};
+    // mjr_render(rightRect, &scn, &con);
+
+    // Objective camera (desktop view)
+    mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
+    mjrRect objRect = {0, 0, windowWidth, windowHeight};
+    mjr_render(objRect, &scn, &con);
+}
+
+void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
+    for (int i = 0; i < 2; ++i) {
+        eyes[i].pos[0] = hmdPose.position[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
+        eyes[i].pos[1] = hmdPose.position[1];
+        eyes[i].pos[2] = hmdPose.position[2];
+        // Convert quaternion to forward and up vectors
+        float qw = hmdPose.orientation[3];
+        float qx = hmdPose.orientation[0];
+        float qy = hmdPose.orientation[1];
+        float qz = hmdPose.orientation[2];
+
+        // Forward vector
+        eyes[i].forward[0] = 2 * (qx * qz + qw * qy);
+        eyes[i].forward[1] = 2 * (qy * qz - qw * qx);
+        eyes[i].forward[2] = 1 - 2 * (qx * qx + qy * qy);
+
+        // Up vector
+        eyes[i].up[0] = 2 * (qx * qy - qw * qz);
+        eyes[i].up[1] = 1 - 2 * (qx * qx + qz * qz);
+        eyes[i].up[2] = 2 * (qy * qz + qw * qx);
+    }
+}
+
 // basic implementation just to build for now
 int main() {
+    // declare OpenVR bridge
+    OpenVRBridge vrBridge;
+    AllPoses vrPoses;
+
     std::cout << "MuJoCo VR Integration\n";
 
     char error_msg[1000] = "Could not load XML";
@@ -59,24 +104,39 @@ int main() {
 
     // keep display for now for testing 
     if (!glfwInit()) { std::cerr << "GLFW init failed\n"; return 1; }
-    window = glfwCreateWindow(1200, 900, "MuJoCo Panda", NULL, NULL);
+    int windowWidth = 1200;
+    int windowHeight = 900;
+    window = glfwCreateWindow(windowWidth, windowHeight, "MuJoCo Panda", NULL, NULL);
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1);
 
     const int predict_horizon = 10; // temp for now
     MarkerIds markers = initMarkers(m, predict_horizon);
 
-    // camera
-    mjv_defaultCamera(&cam1);
-    cam1.distance = 4.0;   // distance from target
-    cam1.azimuth = 45.0;   // azimuth angle
-    cam1.elevation = -30.0; // elevation angle
-
     mjv_defaultOption(&opt);
     mjv_defaultScene(&scn);
     mjr_defaultContext(&con);
     mjv_makeScene(m, &scn, 2000);
     mjr_makeContext(m, &con, mjFONTSCALE_150);
+
+    // Initialize both eyes
+    for (int i = 0; i < 2; ++i) {
+        // mjv_defaultCamera(&eyeCameras[i]);
+        std::array<float, 6> frustum = vrBridge.getFrustum(i);
+        eyeCameras[i].orthographic = 0; // perspective
+        eyeCameras[i].frustum_center = frustum[0];
+        eyeCameras[i].frustum_width = frustum[1];
+        eyeCameras[i].frustum_bottom = frustum[2];
+        eyeCameras[i].frustum_top = frustum[3];
+        eyeCameras[i].frustum_near = frustum[4];
+        eyeCameras[i].frustum_far = frustum[5];
+    }
+
+    // camera
+    mjv_defaultCamera(&objCamera);
+    objCamera.distance = 4.0;   // distance from target
+    objCamera.azimuth = 45.0;   // azimuth angle
+    objCamera.elevation = -30.0; // elevation angle
 
     mj_resetData(m, d);
 
@@ -125,11 +185,6 @@ int main() {
 
     bool requestRestart = false;
 
-
-    // declare OpenVR bridge
-    OpenVRBridge vrBridge;
-    AllPoses vrPoses;
-
     do {
 
         if (!vrBridge.init_vr()) {
@@ -165,16 +220,24 @@ int main() {
 
                 vrPoses = vrBridge.poll_vr();
 
-                if (vrPoses.hmdPose.valid) {
+                if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
                                             vrPoses.hmdPose.position[1],
                                             vrPoses.hmdPose.position[2]);
+                    Eigen::Vector3d left_ctrl_pos(vrPoses.leftControllerPose.position[0],
+                                                vrPoses.leftControllerPose.position[1],
+                                                vrPoses.leftControllerPose.position[2]);
+                    Eigen::Vector3d right_ctrl_pos(vrPoses.rightControllerPose.position[0],
+                                                 vrPoses.rightControllerPose.position[1],
+                                                 vrPoses.rightControllerPose.position[2]);
                     // Simple scaling and offset for demo purposes
                     // T_target(0,3) = hmd_pos.x() * 1.0;
                     // T_target(1,3) = hmd_pos.y() * 1.0;
                     // T_target(2,3) = hmd_pos.z() * 1.0 + 0.5; // offset above ground
                     std::cout << "HMD Position: " << hmd_pos.transpose() << std::endl;
+                    std::cout << "Left Controller Position: " << left_ctrl_pos.transpose() << std::endl;
+                    std::cout << "Right Controller Position: " << right_ctrl_pos.transpose() << std::endl;
                 }
 
                 // finish MuJoCo control loop
@@ -191,8 +254,8 @@ int main() {
 
                 mj_step(m, d);
 
-                mjv_updateScene(m, d, &opt, NULL, &cam1, mjCAT_ALL, &scn);
-                mjr_render(mjrRect{0,0,1200,900}, &scn, &con);
+                // render all the cameras
+                renderAll(m, d, windowWidth, windowHeight);
 
                 glfwSwapBuffers(window);
                 glfwPollEvents();

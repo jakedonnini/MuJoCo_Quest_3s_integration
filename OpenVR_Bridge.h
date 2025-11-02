@@ -46,6 +46,9 @@ public:
     // Shutdown / cleanup OpenVR.
     void shutdown_vr();
 
+    // Get projection frustum for eye i (0 = left, 1 = right)
+    std::array<float, 6> getFrustum(int i);
+
 private:
     // Private container holding the HMD + controller poses. Default-initialized.
     AllPoses allPoses{};
@@ -59,6 +62,7 @@ private:
     static const uint32_t k_unTrackedDeviceIndexInvalid = 0xFFFFFFFF;
     static const uint32_t k_unMaxTrackedDeviceCount = 64;
     static const uint32_t k_unTrackedDeviceIndex_Hmd = 0;
+    static constexpr uint32_t k_unTrackedDeviceIndex_Controller[2] = {1, 2};
 };
 
 #endif // OPENVR_BRIDGE_H
