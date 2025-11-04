@@ -28,6 +28,10 @@ bool OpenVRBridge::init_vr() {
 }
 
 std::array<float, 6> OpenVRBridge::getFrustum(int i) {
+    if (!vr_system) {
+        std::cerr << "OpenVRBridge::getFrustum called before init_vr() or after shutdown. Returning defaults." << std::endl;
+        return {0.0f, 1.0f, -1.0f, 1.0f, 0.1f, 100.0f};
+    }
     vr::EVREye eye = (i == 0) ? vr::Eye_Left : vr::Eye_Right;
 
     float left, right, top, bottom;

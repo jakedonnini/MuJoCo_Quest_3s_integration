@@ -122,6 +122,15 @@
       <site name="target_marker" type="sphere" size="0.025" rgba="1 0 0 1"/>
     </body>
 
+    <!-- VR Hand Stand in -->
+    <body name="vr_hand_left" mocap="true">
+      <site name="vr_hand_left" type="sphere" size="0.025" rgba="0 1 0 1"/>
+    </body>
+
+    <body name="vr_hand_right" mocap="true">
+      <site name="vr_hand_right" type="sphere" size="0.025" rgba="0 1 0 1"/>
+    </body>
+
     <!-- Prediction horizon markers (example for 10) -->
     <body name="ee_pred_0_body" mocap="true">
       <site name="ee_pred_0" type="sphere" size="0.018" rgba="0 0 1 1"/>

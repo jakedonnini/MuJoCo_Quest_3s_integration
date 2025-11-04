@@ -5,6 +5,7 @@
 #include "kinematics.h"
 #include <GLFW/glfw3.h>
 #include <thread>
+#include <array>
 #include "OpenVR_Bridge.h"
 
 #define M_PI 3.14159265358979323846
@@ -37,6 +38,7 @@ MarkerIds initMarkers(mjModel* m, int num_predictions) {
 }
 
 void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
+    // TODO: handle orientation for hands
     if (body_id < 0) return;
     d->mocap_pos[3*body_id + 0] = p.x();
     d->mocap_pos[3*body_id + 1] = p.y();
@@ -119,24 +121,17 @@ int main() {
     mjv_makeScene(m, &scn, 2000);
     mjr_makeContext(m, &con, mjFONTSCALE_150);
 
-    // Initialize both eyes
-    for (int i = 0; i < 2; ++i) {
-        // mjv_defaultCamera(&eyeCameras[i]);
-        std::array<float, 6> frustum = vrBridge.getFrustum(i);
-        eyeCameras[i].orthographic = 0; // perspective
-        eyeCameras[i].frustum_center = frustum[0];
-        eyeCameras[i].frustum_width = frustum[1];
-        eyeCameras[i].frustum_bottom = frustum[2];
-        eyeCameras[i].frustum_top = frustum[3];
-        eyeCameras[i].frustum_near = frustum[4];
-        eyeCameras[i].frustum_far = frustum[5];
-    }
+    std::cout << "Window Created:\n";
+
+    // Defer VR eye frustum setup until OpenVR is initialized
 
     // camera
     mjv_defaultCamera(&objCamera);
     objCamera.distance = 4.0;   // distance from target
     objCamera.azimuth = 45.0;   // azimuth angle
     objCamera.elevation = -30.0; // elevation angle
+
+    std::cout << "Camera initialized:\n";
 
     mj_resetData(m, d);
 
@@ -185,11 +180,26 @@ int main() {
 
     bool requestRestart = false;
 
+    std::cout << "Starting loop:\n";
+
     do {
 
         if (!vrBridge.init_vr()) {
             std::cerr << "Failed to initialize OpenVR.\n";
             break;
+        }
+
+        // Initialize both eyes frusta now that VR is initialized
+        std::cout << "Initializing VR eye frusta...\n";
+        for (int i = 0; i < 2; ++i) {
+            std::array<float, 6> frustum = vrBridge.getFrustum(i);
+            eyeCameras[i].orthographic = 0; // perspective
+            eyeCameras[i].frustum_center = frustum[0];
+            eyeCameras[i].frustum_width = frustum[1];
+            eyeCameras[i].frustum_bottom = frustum[2];
+            eyeCameras[i].frustum_top = frustum[3];
+            eyeCameras[i].frustum_near = frustum[4];
+            eyeCameras[i].frustum_far = frustum[5];
         }
 
 
@@ -222,22 +232,33 @@ int main() {
 
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
+                    setVRCamPose(eyeCameras, vrPoses.hmdPose, 0.064f); // typical IPD ~64mm
+                    
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
-                                            vrPoses.hmdPose.position[1],
-                                            vrPoses.hmdPose.position[2]);
-                    Eigen::Vector3d left_ctrl_pos(vrPoses.leftControllerPose.position[0],
-                                                vrPoses.leftControllerPose.position[1],
-                                                vrPoses.leftControllerPose.position[2]);
-                    Eigen::Vector3d right_ctrl_pos(vrPoses.rightControllerPose.position[0],
-                                                 vrPoses.rightControllerPose.position[1],
-                                                 vrPoses.rightControllerPose.position[2]);
-                    // Simple scaling and offset for demo purposes
-                    // T_target(0,3) = hmd_pos.x() * 1.0;
-                    // T_target(1,3) = hmd_pos.y() * 1.0;
-                    // T_target(2,3) = hmd_pos.z() * 1.0 + 0.5; // offset above ground
+                                             vrPoses.hmdPose.position[1],
+                                             vrPoses.hmdPose.position[2]);
                     std::cout << "HMD Position: " << hmd_pos.transpose() << std::endl;
+                }
+
+                // set the pos of left hand
+                if (vrPoses.leftControllerPose.valid) {
+                    Eigen::Vector3d left_ctrl_pos(vrPoses.leftControllerPose.position[0],
+                                                    vrPoses.leftControllerPose.position[1],
+                                                    vrPoses.leftControllerPose.position[2]);
+
                     std::cout << "Left Controller Position: " << left_ctrl_pos.transpose() << std::endl;
+                    setMocapBodyPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_left"), left_ctrl_pos);
+                }
+
+                // set the pos of right hand
+                if (vrPoses.rightControllerPose.valid) {
+                    Eigen::Vector3d right_ctrl_pos(vrPoses.rightControllerPose.position[0],
+                                                     vrPoses.rightControllerPose.position[1],
+                                                     vrPoses.rightControllerPose.position[2]);
+
+                    // TODO: Convert from room space to model space                                 
                     std::cout << "Right Controller Position: " << right_ctrl_pos.transpose() << std::endl;
+                    setMocapBodyPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_right"), right_ctrl_pos);
                 }
 
                 // finish MuJoCo control loop
@@ -255,7 +276,10 @@ int main() {
                 mj_step(m, d);
 
                 // render all the cameras
-                renderAll(m, d, windowWidth, windowHeight);
+                // renderAll(m, d, windowWidth, windowHeight);
+                mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
+                mjrRect objRect = {0, 0, windowWidth, windowHeight};
+                mjr_render(objRect, &scn, &con);
 
                 glfwSwapBuffers(window);
                 glfwPollEvents();

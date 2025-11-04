@@ -7,6 +7,7 @@
 
 #include <openvr.h>
 #include <cstdint>
+#include <array>
 
 // Simple pose container used in the implementation file.
 struct Pose {
