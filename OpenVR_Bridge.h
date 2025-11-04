@@ -8,6 +8,7 @@
 #include <openvr.h>
 #include <cstdint>
 #include <array>
+#include <GLFW/glfw3.h>
 
 // Simple pose container used in the implementation file.
 struct Pose {
@@ -49,6 +50,10 @@ public:
 
     // Get projection frustum for eye i (0 = left, 1 = right)
     std::array<float, 6> getFrustum(int i);
+
+    void submit_vr_frame(GLuint leftEyeTex, GLuint rightEyeTex);
+
+    std::array<int, 2> getRecommendedRenderTargetSize();
 
 private:
     // Private container holding the HMD + controller poses. Default-initialized.

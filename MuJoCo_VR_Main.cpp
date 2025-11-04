@@ -4,6 +4,7 @@
 #include "mujoco/mujoco.h"
 #include "kinematics.h"
 #include <GLFW/glfw3.h>
+#include <glad/gl.h>
 #include <thread>
 #include <array>
 #include "OpenVR_Bridge.h"
@@ -38,7 +39,6 @@ MarkerIds initMarkers(mjModel* m, int num_predictions) {
 }
 
 void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
-    // TODO: handle orientation for hands
     if (body_id < 0) return;
     d->mocap_pos[3*body_id + 0] = p.x();
     d->mocap_pos[3*body_id + 1] = p.y();
@@ -50,16 +50,30 @@ void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
     d->mocap_quat[4*body_id + 3] = 0.0;
 }
 
-void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight) {
-    // Left Eye
-    // mjv_updateScene(m, d, &opt, nullptr, &eyeCameras[0], mjCAT_ALL, &scn);
-    // mjrRect leftRect = {0, 0, windowWidth / 3, windowHeight};
-    // mjr_render(leftRect, &scn, &con);
+void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelquat[4]) {
+    if (body_id < 0) return;
+    d->mocap_pos[3*body_id + 0] = modelpos[0];
+    d->mocap_pos[3*body_id + 1] = modelpos[1];
+    d->mocap_pos[3*body_id + 2] = modelpos[2];
+    // Keep orientation identity
+    d->mocap_quat[4*body_id + 0] = modelquat[0];
+    d->mocap_quat[4*body_id + 1] = modelquat[1];
+    d->mocap_quat[4*body_id + 2] = modelquat[2];
+    d->mocap_quat[4*body_id + 3] = modelquat[3];
+}
 
-    // // Right Eye
-    // mjv_updateScene(m, d, &opt, nullptr, &eyeCameras[1], mjCAT_ALL, &scn);
-    // mjrRect rightRect = {windowWidth / 3, 0, windowWidth / 3, windowHeight};
-    // mjr_render(rightRect, &scn, &con);
+void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int renderWidth, int renderHeight, GLuint leftFBO, GLuint rightFBO) {
+    // VR Eye cameras
+    // TODO: REDO RENDERING WITH GLCAMERAS 
+    mjv_updateScene(m, d, &opt, NULL, &eyeCameras[0], mjCAT_ALL, &scn);
+    glBindFramebuffer(GL_FRAMEBUFFER, leftFBO);
+    mjr_render(mjrRect{0, 0, renderWidth, renderHeight}, &scn, &con);
+
+    mjv_updateScene(m, d, &opt, NULL, &eyeCameras[1], mjCAT_ALL, &scn);
+    glBindFramebuffer(GL_FRAMEBUFFER, rightFBO);
+    mjr_render(mjrRect{0, 0, renderWidth, renderHeight}, &scn, &con);
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Objective camera (desktop view)
     mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
@@ -69,14 +83,24 @@ void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight) {
 
 void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
     for (int i = 0; i < 2; ++i) {
-        eyes[i].pos[0] = hmdPose.position[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
-        eyes[i].pos[1] = hmdPose.position[1];
-        eyes[i].pos[2] = hmdPose.position[2];
+        // convert to room coords
+        mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
+        mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
+        
+        mjtNum modelpos[3];
+        mjtNum modelquat[4];
+        
+        // room to model
+        mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
+
+        eyes[i].pos[0] = modelpos[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
+        eyes[i].pos[1] = modelpos[1];
+        eyes[i].pos[2] = modelpos[2];
         // Convert quaternion to forward and up vectors
-        float qw = hmdPose.orientation[3];
-        float qx = hmdPose.orientation[0];
-        float qy = hmdPose.orientation[1];
-        float qz = hmdPose.orientation[2];
+        float qw = modelquat[0];
+        float qx = modelquat[1];
+        float qy = modelquat[2]; 
+        float qz = modelquat[3];
 
         // Forward vector
         eyes[i].forward[0] = 2 * (qx * qz + qw * qy);
@@ -97,6 +121,11 @@ int main() {
     AllPoses vrPoses;
 
     std::cout << "MuJoCo VR Integration\n";
+
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+    fprintf(stderr, "Failed to initialize OpenGL context\n");
+    return -1;
+    }
 
     char error_msg[1000] = "Could not load XML";
     mjModel* m = mj_loadXML(MODEL_XML, NULL, error_msg, sizeof(error_msg));
@@ -202,6 +231,34 @@ int main() {
             eyeCameras[i].frustum_far = frustum[5];
         }
 
+        // get the target render size
+        std::array<int, 2> renderTargetSize = vrBridge.getRecommendedRenderTargetSize();
+        int renderWidth = renderTargetSize[0];
+        int renderHeight = renderTargetSize[1];
+
+        // create textures for each eye
+        GLuint leftEyeTex, rightEyeTex;
+        GLuint leftFBO, rightFBO;
+
+        glGenTextures(1, &leftEyeTex);
+        glBindTexture(GL_TEXTURE_2D, leftEyeTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderWidth, renderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenFramebuffers(1, &leftFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, leftFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, leftEyeTex, 0);
+
+        glGenTextures(1, &rightEyeTex);
+        glBindTexture(GL_TEXTURE_2D, rightEyeTex);
+        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderWidth, renderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+        glGenFramebuffers(1, &rightFBO);
+        glBindFramebuffer(GL_FRAMEBUFFER, rightFBO);
+        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rightEyeTex, 0);
+
+        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         while (!quitKeyPressed) {
             bool exitRenderLoop = false;
@@ -242,23 +299,32 @@ int main() {
 
                 // set the pos of left hand
                 if (vrPoses.leftControllerPose.valid) {
-                    Eigen::Vector3d left_ctrl_pos(vrPoses.leftControllerPose.position[0],
-                                                    vrPoses.leftControllerPose.position[1],
-                                                    vrPoses.leftControllerPose.position[2]);
+                    mjtNum roompos[3]  = { vrPoses.leftControllerPose.position[0], vrPoses.leftControllerPose.position[1], vrPoses.leftControllerPose.position[2] };
+                    mjtNum roomquat[4] = { vrPoses.leftControllerPose.orientation[0], vrPoses.leftControllerPose.orientation[1], vrPoses.leftControllerPose.orientation[2], vrPoses.leftControllerPose.orientation[3] };
+                    
+                    mjtNum modelpos[3];
+                    mjtNum modelquat[4];
+                    
+                    // room to model
+                    mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
 
-                    std::cout << "Left Controller Position: " << left_ctrl_pos.transpose() << std::endl;
-                    setMocapBodyPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_left"), left_ctrl_pos);
+                    std::cout << "Left Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
+                    setMocapHandPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_left"), modelpos, modelquat);
                 }
 
                 // set the pos of right hand
                 if (vrPoses.rightControllerPose.valid) {
-                    Eigen::Vector3d right_ctrl_pos(vrPoses.rightControllerPose.position[0],
-                                                     vrPoses.rightControllerPose.position[1],
-                                                     vrPoses.rightControllerPose.position[2]);
+                    mjtNum roompos[3]  = { vrPoses.rightControllerPose.position[0], vrPoses.rightControllerPose.position[1], vrPoses.rightControllerPose.position[2] };
+                    mjtNum roomquat[4] = { vrPoses.rightControllerPose.orientation[0], vrPoses.rightControllerPose.orientation[1], vrPoses.rightControllerPose.orientation[2], vrPoses.rightControllerPose.orientation[3] };
 
-                    // TODO: Convert from room space to model space                                 
-                    std::cout << "Right Controller Position: " << right_ctrl_pos.transpose() << std::endl;
-                    setMocapBodyPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_right"), right_ctrl_pos);
+                    mjtNum modelpos[3];
+                    mjtNum modelquat[4];
+                    
+                    // room to model
+                    mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
+
+                    std::cout << "Right Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
+                    setMocapHandPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_right"), modelpos, modelquat);
                 }
 
                 // finish MuJoCo control loop
@@ -276,10 +342,10 @@ int main() {
                 mj_step(m, d);
 
                 // render all the cameras
-                // renderAll(m, d, windowWidth, windowHeight);
-                mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
-                mjrRect objRect = {0, 0, windowWidth, windowHeight};
-                mjr_render(objRect, &scn, &con);
+                renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight, leftFBO, rightFBO);
+
+                // submit frames to VR compositor
+                vrBridge.submit_vr_frame(leftEyeTex, rightEyeTex);
 
                 glfwSwapBuffers(window);
                 glfwPollEvents();

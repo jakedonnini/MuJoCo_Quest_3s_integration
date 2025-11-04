@@ -47,6 +47,12 @@ std::array<float, 6> OpenVRBridge::getFrustum(int i) {
     return frustum;
 }
 
+std::array<int, 2> OpenVRBridge::getRecommendedRenderTargetSize() {
+    uint32_t width = 0, height = 0;
+    vr_system->GetRecommendedRenderTargetSize(&width, &height);
+    return {static_cast<int>(width), static_cast<int>(height)};
+}
+
 Pose getPoseFromMatrix(const vr::HmdMatrix34_t& mat) {
     Pose pose;
 
@@ -64,10 +70,10 @@ Pose getPoseFromMatrix(const vr::HmdMatrix34_t& mat) {
     qy = copysign(qy, mat.m[0][2] - mat.m[2][0]);
     qz = copysign(qz, mat.m[1][0] - mat.m[0][1]);
 
-    pose.orientation[0] = qx;
-    pose.orientation[1] = qy;
-    pose.orientation[2] = qz;
-    pose.orientation[3] = qw;
+    pose.orientation[0] = qw;
+    pose.orientation[1] = qx;
+    pose.orientation[2] = qy;
+    pose.orientation[3] = qz;
 
     pose.valid = true;
     return pose;
@@ -105,6 +111,18 @@ AllPoses OpenVRBridge::poll_vr() {
     }
 
     return allPoses;
+}
+
+void OpenVRBridge::submit_vr_frame(GLuint leftEyeTex, GLuint rightEyeTex) {
+    vr::Texture_t leftEyeTexture = { (void*)(uintptr_t)leftEyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
+    vr::Texture_t rightEyeTexture = { (void*)(uintptr_t)rightEyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
+
+    // submit textures to OpenVR compositor
+    vr::VRCompositor()->Submit(vr::Eye_Left, &leftEyeTexture);
+    vr::VRCompositor()->Submit(vr::Eye_Right, &rightEyeTexture);
+
+    // Notify the compositor that we've finished submitting for this frame
+    vr::VRCompositor()->PostPresentHandoff();
 }
 
 void OpenVRBridge::shutdown_vr() {
