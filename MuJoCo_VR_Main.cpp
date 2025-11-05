@@ -3,8 +3,9 @@
 #include <cmath>
 #include "mujoco/mujoco.h"
 #include "kinematics.h"
-#include <GLFW/glfw3.h>
+#define GLFW_INCLUDE_NONE
 #include <glad/gl.h>
+// #include <GLFW/glfw3.h>
 #include <thread>
 #include <array>
 #include "OpenVR_Bridge.h"
@@ -17,6 +18,10 @@ mjvOption opt;
 mjvScene scn; 
 mjrContext con; 
 GLFWwindow* window;
+
+GLuint leftEyeFBO, rightEyeFBO;
+GLuint leftEyeTex, rightEyeTex;
+GLuint leftEyeDepth, rightEyeDepth;
 
 // const char* MODEL_XML = "C:/Users/jaked/Documents/Physics_Sim/mujoco_menagerie-main/mujoco_menagerie-main/franka_emika_panda/mjx_panda.xml";
 const char* MODEL_XML = "C:/Users/jaked/OneDrive/Documents/Mujoco_VR/MuJoCo_Quest_3s_integration/xml/mjx_panda_MPC.xml";
@@ -37,6 +42,36 @@ MarkerIds initMarkers(mjModel* m, int num_predictions) {
     }
     return ids;
 }
+
+// Helper lambda for creating an FBO
+auto createEyeBuffer = [&](GLuint &fbo, GLuint &tex, GLuint &depth, int renderWidth, int renderHeight) {
+    glGenFramebuffers(1, &fbo);
+    glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+
+    // --- Color texture ---
+    glGenTextures(1, &tex);
+    glBindTexture(GL_TEXTURE_2D, tex);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderWidth, renderHeight, 0,
+                 GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
+                           GL_TEXTURE_2D, tex, 0);
+
+    // --- Depth buffer ---
+    glGenRenderbuffers(1, &depth);
+    glBindRenderbuffer(GL_RENDERBUFFER, depth);
+    glRenderbufferStorage(GL_RENDERBUFFER, GL_DEPTH24_STENCIL8,
+                          renderWidth, renderHeight);
+    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_DEPTH_STENCIL_ATTACHMENT,
+                              GL_RENDERBUFFER, depth);
+
+    // --- Check completeness ---
+    if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE)
+        std::cerr << "Error: FBO not complete!" << std::endl;
+
+    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+};
 
 void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
     if (body_id < 0) return;
@@ -62,23 +97,36 @@ void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelqua
     d->mocap_quat[4*body_id + 3] = modelquat[3];
 }
 
-void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int renderWidth, int renderHeight, GLuint leftFBO, GLuint rightFBO) {
+void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int renderWidth, int renderHeight) {
     // VR Eye cameras
-    // TODO: REDO RENDERING WITH GLCAMERAS 
-    mjv_updateScene(m, d, &opt, NULL, &eyeCameras[0], mjCAT_ALL, &scn);
-    glBindFramebuffer(GL_FRAMEBUFFER, leftFBO);
-    mjr_render(mjrRect{0, 0, renderWidth, renderHeight}, &scn, &con);
+    // 1. Left eye
+    glBindFramebuffer(GL_FRAMEBUFFER, leftEyeFBO);
+    glViewport(0, 0, renderWidth, renderHeight);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    mjv_updateScene(m, d, &opt, NULL, &eyeCameras[1], mjCAT_ALL, &scn);
-    glBindFramebuffer(GL_FRAMEBUFFER, rightFBO);
-    mjr_render(mjrRect{0, 0, renderWidth, renderHeight}, &scn, &con);
+    // Update MuJoCo scene
+    mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
+    scn.camera[0] = eyeCameras[0];   // your mjvGLCamera for left eye
 
+    // Render
+    mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+
+    // 2. Right eye
+    glBindFramebuffer(GL_FRAMEBUFFER, rightEyeFBO);
+    glViewport(0, 0, renderWidth, renderHeight);
+    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+
+    mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
+    scn.camera[0] = eyeCameras[1];  // your mjvGLCamera for right eye
+    mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+
+    // Unbind
     glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Objective camera (desktop view)
-    mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
-    mjrRect objRect = {0, 0, windowWidth, windowHeight};
-    mjr_render(objRect, &scn, &con);
+    // mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
+    // mjrRect objRect = {0, 0, windowWidth, windowHeight};
+    // mjr_render(objRect, &scn, &con);
 }
 
 void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
@@ -122,10 +170,21 @@ int main() {
 
     std::cout << "MuJoCo VR Integration\n";
 
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
-    fprintf(stderr, "Failed to initialize OpenGL context\n");
-    return -1;
+    if (!vrBridge.init_vr()) {
+        std::cerr << "Failed to initialize OpenVR.\n";
+        return 1;
     }
+
+    // get the target render size
+    std::array<int, 2> renderTargetSize = vrBridge.getRecommendedRenderTargetSize();
+    int renderWidth = renderTargetSize[0];
+    int renderHeight = renderTargetSize[1];
+
+    // Create both eyes’ buffers
+    createEyeBuffer(leftEyeFBO, leftEyeTex, leftEyeDepth, renderWidth, renderHeight);
+    createEyeBuffer(rightEyeFBO, rightEyeTex, rightEyeDepth, renderWidth, renderHeight);
+
+    std::cout << "VR initialized and buffers created:\n";
 
     char error_msg[1000] = "Could not load XML";
     mjModel* m = mj_loadXML(MODEL_XML, NULL, error_msg, sizeof(error_msg));
@@ -135,10 +194,41 @@ int main() {
 
     // keep display for now for testing 
     if (!glfwInit()) { std::cerr << "GLFW init failed\n"; return 1; }
+    // Request a modern OpenGL context (3.3 core or newer). MuJoCo needs FBO support.
+    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
+    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
+    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
+    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
     int windowWidth = 1200;
     int windowHeight = 900;
     window = glfwCreateWindow(windowWidth, windowHeight, "MuJoCo Panda", NULL, NULL);
+    if (!window) { std::cerr << "Failed to create GLFW window\n"; glfwTerminate(); return 1; }
     glfwMakeContextCurrent(window);
+    // Load OpenGL function pointers now that a context is current
+    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize OpenGL context\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
+    // Print GPU/GL info and verify required features (FBO)
+    const GLubyte* vendor = glGetString(GL_VENDOR);
+    const GLubyte* renderer = glGetString(GL_RENDERER);
+    const GLubyte* version = glGetString(GL_VERSION);
+    std::cout << "OpenGL Vendor: " << (vendor ? (const char*)vendor : "?") << "\n";
+    std::cout << "OpenGL Renderer: " << (renderer ? (const char*)renderer : "?") << "\n";
+    std::cout << "OpenGL Version: " << (version ? (const char*)version : "?") << "\n";
+    // Prefer version check: FBO is core in OpenGL >= 3.0
+    GLint glMajor = 0, glMinor = 0;
+    glGetIntegerv(GL_MAJOR_VERSION, &glMajor);
+    glGetIntegerv(GL_MINOR_VERSION, &glMinor);
+    if (glMajor < 3) {
+        std::cerr << "ERROR: OpenGL 3.0+ required for framebuffer objects.\n";
+        glfwDestroyWindow(window);
+        glfwTerminate();
+        return 1;
+    }
     glfwSwapInterval(1);
 
     const int predict_horizon = 10; // temp for now
@@ -213,11 +303,6 @@ int main() {
 
     do {
 
-        if (!vrBridge.init_vr()) {
-            std::cerr << "Failed to initialize OpenVR.\n";
-            break;
-        }
-
         // Initialize both eyes frusta now that VR is initialized
         std::cout << "Initializing VR eye frusta...\n";
         for (int i = 0; i < 2; ++i) {
@@ -230,35 +315,6 @@ int main() {
             eyeCameras[i].frustum_near = frustum[4];
             eyeCameras[i].frustum_far = frustum[5];
         }
-
-        // get the target render size
-        std::array<int, 2> renderTargetSize = vrBridge.getRecommendedRenderTargetSize();
-        int renderWidth = renderTargetSize[0];
-        int renderHeight = renderTargetSize[1];
-
-        // create textures for each eye
-        GLuint leftEyeTex, rightEyeTex;
-        GLuint leftFBO, rightFBO;
-
-        glGenTextures(1, &leftEyeTex);
-        glBindTexture(GL_TEXTURE_2D, leftEyeTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderWidth, renderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenFramebuffers(1, &leftFBO);
-        glBindFramebuffer(GL_FRAMEBUFFER, leftFBO);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, leftEyeTex, 0);
-
-        glGenTextures(1, &rightEyeTex);
-        glBindTexture(GL_TEXTURE_2D, rightEyeTex);
-        glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, renderWidth, renderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, nullptr);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        glGenFramebuffers(1, &rightFBO);
-        glBindFramebuffer(GL_FRAMEBUFFER, rightFBO);
-        glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, rightEyeTex, 0);
-
-        glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
         while (!quitKeyPressed) {
             bool exitRenderLoop = false;
@@ -342,7 +398,7 @@ int main() {
                 mj_step(m, d);
 
                 // render all the cameras
-                renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight, leftFBO, rightFBO);
+                renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight);
 
                 // submit frames to VR compositor
                 vrBridge.submit_vr_frame(leftEyeTex, rightEyeTex);

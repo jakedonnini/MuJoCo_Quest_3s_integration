@@ -51,7 +51,9 @@ public:
     // Get projection frustum for eye i (0 = left, 1 = right)
     std::array<float, 6> getFrustum(int i);
 
-    void submit_vr_frame(GLuint leftEyeTex, GLuint rightEyeTex);
+    // Submit eye textures (OpenGL texture IDs). Use unsigned int to avoid
+    // requiring GLFW or GL headers in this public header.
+    void submit_vr_frame(unsigned int leftEyeTex, unsigned int rightEyeTex);
 
     std::array<int, 2> getRecommendedRenderTargetSize();
 

@@ -490,10 +490,14 @@ if (WIN32)
     if(OPENVR_INCLUDE_DIR AND OPENVR_LIBRARY)
         add_executable(MuJoCo_VR_Main_OpenVR
             ${CMAKE_CURRENT_SOURCE_DIR}/MuJoCo_VR_Main.cpp
+            # GLAD2 loader sources for OpenGL function loading
+            ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/gl.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/src/wgl.c
         )
         target_include_directories(MuJoCo_VR_Main_OpenVR PRIVATE
             ${CMAKE_CURRENT_SOURCE_DIR}
             ${OPENVR_INCLUDE_DIR}
+            ${CMAKE_CURRENT_SOURCE_DIR}/OpenXR-SDK-Source/src/external/glad2/include
         )
         target_link_libraries(MuJoCo_VR_Main_OpenVR PRIVATE
             ${GLFW_TARGET}
@@ -580,7 +584,9 @@ if (WIN32)
             ${OPENVR_INCLUDE_DIR}
             ${CMAKE_CURRENT_SOURCE_DIR}
         )
-        target_link_libraries(OpenVRBridge PUBLIC ${OPENVR_LIBRARY})
+        # Link GLFW so its include directory (GLFW/glfw3.h) is available when
+        # compiling the OpenVRBridge library, since the header uses GLFW types (GLuint).
+        target_link_libraries(OpenVRBridge PUBLIC ${OPENVR_LIBRARY} ${GLFW_TARGET})
         target_compile_definitions(OpenVRBridge PRIVATE WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS)
 
         # Best-effort: copy openvr_api.dll next to OpenVR executable(s)
