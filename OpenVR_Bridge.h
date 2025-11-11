@@ -53,9 +53,11 @@ public:
 
     // Submit eye textures (OpenGL texture IDs). Use unsigned int to avoid
     // requiring GLFW or GL headers in this public header.
-    void submit_vr_frame(unsigned int leftEyeTex, unsigned int rightEyeTex);
+    void submit_vr_frame(GLuint EyeTex);
 
     std::array<int, 2> getRecommendedRenderTargetSize();
+
+    void getProjectionRaw(vr::EVREye eye, float *pfLeft, float *pfRight, float *pfTop, float *pfBottom);
 
 private:
     // Private container holding the HMD + controller poses. Default-initialized.
@@ -64,6 +66,8 @@ private:
 
 
     vr::IVRSystem* vr_system = nullptr;
+    int width = 0;
+    int height = 0;
     vr::EVRInitError eError = vr::VRInitError_None;
 
     typedef uint32_t TrackedDeviceIndex_t;

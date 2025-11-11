@@ -3,24 +3,29 @@
 #include <cmath>
 #include "mujoco/mujoco.h"
 #include "kinematics.h"
-#define GLFW_INCLUDE_NONE
+
+#define GLFW_INCLUDE_NONE     // prevents GLFW from including old gl.h
+#include <GLFW/glfw3.h>
 #include <glad/gl.h>
-// #include <GLFW/glfw3.h>
+
 #include <thread>
 #include <array>
 #include "OpenVR_Bridge.h"
 
 #define M_PI 3.14159265358979323846
 
-mjvGLCamera eyeCameras[2];   // Left/right VR eyes
-mjvCamera objCamera;       // Objective camera (monitor view) 
+// mjvCamera objCamera;       // Objective camera (monitor view) 
 mjvOption opt; 
 mjvScene scn; 
 mjrContext con; 
 GLFWwindow* window;
 
+mjModel* m = 0;
+mjData* d = 0;
+
 GLuint leftEyeFBO, rightEyeFBO;
-GLuint leftEyeTex, rightEyeTex;
+// GLuint leftEyeTex, rightEyeTex;
+GLuint EyeTex;
 GLuint leftEyeDepth, rightEyeDepth;
 
 // const char* MODEL_XML = "C:/Users/jaked/Documents/Physics_Sim/mujoco_menagerie-main/mujoco_menagerie-main/franka_emika_panda/mjx_panda.xml";
@@ -100,28 +105,28 @@ void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelqua
 void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int renderWidth, int renderHeight) {
     // VR Eye cameras
     // 1. Left eye
-    glBindFramebuffer(GL_FRAMEBUFFER, leftEyeFBO);
-    glViewport(0, 0, renderWidth, renderHeight);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // glBindFramebuffer(GL_FRAMEBUFFER, leftEyeFBO);
+    // glViewport(0, 0, renderWidth, renderHeight);
+    // glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    // Update MuJoCo scene
-    mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
-    scn.camera[0] = eyeCameras[0];   // your mjvGLCamera for left eye
+    // // Update MuJoCo scene
+    // mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
+    // scn.camera[0] = eyeCameras[0];   // your mjvGLCamera for left eye
 
-    // Render
-    mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+    // // Render
+    // mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
 
-    // 2. Right eye
-    glBindFramebuffer(GL_FRAMEBUFFER, rightEyeFBO);
-    glViewport(0, 0, renderWidth, renderHeight);
-    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    // // 2. Right eye
+    // glBindFramebuffer(GL_FRAMEBUFFER, rightEyeFBO);
+    // glViewport(0, 0, renderWidth, renderHeight);
+    // glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
-    mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
-    scn.camera[0] = eyeCameras[1];  // your mjvGLCamera for right eye
-    mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+    // mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
+    // scn.camera[0] = eyeCameras[1];  // your mjvGLCamera for right eye
+    // mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
 
-    // Unbind
-    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+    // // Unbind
+    // glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
     // Objective camera (desktop view)
     // mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
@@ -129,7 +134,7 @@ void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int ren
     // mjr_render(objRect, &scn, &con);
 }
 
-void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
+void setVRCamPose(Pose hmdPose, float ipd) {
     for (int i = 0; i < 2; ++i) {
         // convert to room coords
         mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
@@ -141,9 +146,9 @@ void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
         // room to model
         mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
 
-        eyes[i].pos[0] = modelpos[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
-        eyes[i].pos[1] = modelpos[1];
-        eyes[i].pos[2] = modelpos[2];
+        scn.camera[i].pos[0] = modelpos[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
+        scn.camera[i].pos[1] = modelpos[1];
+        scn.camera[i].pos[2] = modelpos[2];
         // Convert quaternion to forward and up vectors
         float qw = modelquat[0];
         float qx = modelquat[1];
@@ -151,15 +156,131 @@ void setVRCamPose(mjvGLCamera eyes[2], Pose hmdPose, float ipd) {
         float qz = modelquat[3];
 
         // Forward vector
-        eyes[i].forward[0] = 2 * (qx * qz + qw * qy);
-        eyes[i].forward[1] = 2 * (qy * qz - qw * qx);
-        eyes[i].forward[2] = 1 - 2 * (qx * qx + qy * qy);
+        scn.camera[i].forward[0] = 2 * (qx * qz + qw * qy);
+        scn.camera[i].forward[1] = 2 * (qy * qz - qw * qx);
+        scn.camera[i].forward[2] = 1 - 2 * (qx * qx + qy * qy);
 
         // Up vector
-        eyes[i].up[0] = 2 * (qx * qy - qw * qz);
-        eyes[i].up[1] = 1 - 2 * (qx * qx + qz * qz);
-        eyes[i].up[2] = 2 * (qy * qz + qw * qx);
+        scn.camera[i].up[0] = 2 * (qx * qy - qw * qz);
+        scn.camera[i].up[1] = 1 - 2 * (qx * qx + qz * qz);
+        scn.camera[i].up[2] = 2 * (qy * qz + qw * qx);
     }
+}
+
+void cameraInit(OpenVRBridge vrBridge, int renderWidth, int renderHeight) {
+    // Initialize both eyes frusta now that VR is initialized
+    std::cout << "Initializing VR eye frusta...\n";
+    for (int i = 0; i < 2; ++i) {
+        std::array<float, 6> frustum = vrBridge.getFrustum(i);
+
+        // scn.camera[i].orthographic = 0; // perspective
+        scn.camera[i].frustum_center = frustum[0]; 
+        scn.camera[i].frustum_width = frustum[1];
+        scn.camera[i].frustum_bottom = frustum[2];
+        scn.camera[i].frustum_top = frustum[3];
+        scn.camera[i].frustum_near = frustum[4];
+        scn.camera[i].frustum_far = frustum[5];
+    }
+
+    // create vr texture
+    glActiveTexture(GL_TEXTURE2);
+    glGenTextures(1, &EyeTex);
+    glBindTexture(GL_TEXTURE_2D, EyeTex);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 2*renderWidth, renderHeight, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+}
+
+void vr_render(int renderWidth, int renderHeight) {
+    // resolve multi-sample offscreen buffer
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, con.offFBO);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, con.offFBO_r);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+    glBlitFramebuffer(0, 0, 2*renderWidth, renderHeight,
+                      0, 0, 2*renderWidth, renderHeight,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    // blit to window, left only, window is half-size
+    glBindFramebuffer(GL_READ_FRAMEBUFFER, con.offFBO_r);
+    glReadBuffer(GL_COLOR_ATTACHMENT0);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, 0);
+    glDrawBuffer(con.windowDoublebuffer ? GL_BACK : GL_FRONT);
+    glBlitFramebuffer(0, 0, renderWidth, renderHeight,
+                      0, 0, renderWidth/2, renderHeight/2,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+
+    // blit to vr texture
+    glActiveTexture(GL_TEXTURE2);
+    glBindFramebuffer(GL_DRAW_FRAMEBUFFER, con.offFBO_r);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, EyeTex, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT1);
+    glBlitFramebuffer(0, 0, 2*renderWidth, renderHeight,
+                      0, 0, 2*renderWidth, renderHeight,
+                      GL_COLOR_BUFFER_BIT, GL_NEAREST);
+    glFramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, 0, 0);
+    glDrawBuffer(GL_COLOR_ATTACHMENT0);
+}
+
+int initMuJoCo(const char* MODEL, int width2, int height) {
+
+    // initialise GLFW
+    if (!glfwInit()) { std::cerr << "GLFW init failed\n"; return 0; }
+
+    glfwWindowHint(GLFW_SAMPLES, 0);
+    glfwWindowHint(GLFW_DOUBLEBUFFER, 1);
+    glfwWindowHint(GLFW_RESIZABLE, 0);
+    window = glfwCreateWindow(width2/4, height/2, "MuJoCo VR", NULL, NULL);
+    if( !window )
+    {
+        printf("Could not create GLFW window\n");
+        return 0;
+    }
+    glfwMakeContextCurrent(window);
+    glfwSwapInterval(0);
+
+
+    // Initialize GLAD after making the GLFW context current
+    if (!gladLoadGL(glfwGetProcAddress)) {
+        std::cerr << "Failed to initialize GLAD" << std::endl;
+        return 0;
+    }
+
+    // load the model
+    char error_msg[1000] = "Could not load XML";
+    m = mj_loadXML(MODEL, NULL, error_msg, sizeof(error_msg));
+    if (!m) { std::cerr << "Failed to load model: " << error_msg << std::endl; return 0; }
+    d = mj_makeData(m);
+    if (!d) { mj_deleteModel(m); std::cerr << "Failed to allocate data\n"; return 0; }
+
+    // forward the model once to initialize
+    mj_forward(m, d);
+
+    // set offscreen buffer size to match HMD
+    m->vis.global.offwidth = width2;
+    m->vis.global.offheight = height;
+    m->vis.quality.offsamples = 8;
+
+    mjv_defaultOption(&opt);
+    mjv_defaultScene(&scn);
+    mjr_defaultContext(&con);
+    mjv_makeScene(m, &scn, 1000);
+    mjr_makeContext(m, &con, mjFONTSCALE_100);
+
+    // initialize model transform
+    scn.enabletransform = 1;
+    scn.translate[1] = -0.5;
+    scn.translate[2] = -0.5;
+    scn.rotate[0] = (float)cos(-0.25*mjPI);
+    scn.rotate[1] = (float)sin(-0.25*mjPI);
+    scn.scale = 1;
+
+    // stereo mode
+    scn.stereo = mjSTEREO_SIDEBYSIDE;
+
+    return 1;
 }
 
 // basic implementation just to build for now
@@ -172,6 +293,7 @@ int main() {
 
     if (!vrBridge.init_vr()) {
         std::cerr << "Failed to initialize OpenVR.\n";
+        vrBridge.shutdown_vr();
         return 1;
     }
 
@@ -180,77 +302,31 @@ int main() {
     int renderWidth = renderTargetSize[0];
     int renderHeight = renderTargetSize[1];
 
+    if (!initMuJoCo(MODEL_XML, (int)2*renderWidth, (int)renderHeight)) {
+        std::cerr << "Failed to initialize MuJoCo.\n";
+        vrBridge.shutdown_vr();
+        return 1;
+    }
+
+    std::cout << "MuJoCo initialized:\n";
+
+    cameraInit(vrBridge, renderWidth, renderHeight);
+
+    std::cout << "Camera initialized:\n";
+
     // Create both eyes’ buffers
-    createEyeBuffer(leftEyeFBO, leftEyeTex, leftEyeDepth, renderWidth, renderHeight);
-    createEyeBuffer(rightEyeFBO, rightEyeTex, rightEyeDepth, renderWidth, renderHeight);
-
-    std::cout << "VR initialized and buffers created:\n";
-
-    char error_msg[1000] = "Could not load XML";
-    mjModel* m = mj_loadXML(MODEL_XML, NULL, error_msg, sizeof(error_msg));
-    if (!m) { std::cerr << "Failed to load model: " << error_msg << std::endl; return 1; }
-    mjData* d = mj_makeData(m);
-    if (!d) { mj_deleteModel(m); std::cerr << "Failed to allocate data\n"; return 1; }
-
-    // keep display for now for testing 
-    if (!glfwInit()) { std::cerr << "GLFW init failed\n"; return 1; }
-    // Request a modern OpenGL context (3.3 core or newer). MuJoCo needs FBO support.
-    glfwWindowHint(GLFW_CLIENT_API, GLFW_OPENGL_API);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MAJOR, 3);
-    glfwWindowHint(GLFW_CONTEXT_VERSION_MINOR, 3);
-    glfwWindowHint(GLFW_OPENGL_PROFILE, GLFW_OPENGL_CORE_PROFILE);
-    glfwWindowHint(GLFW_OPENGL_FORWARD_COMPAT, GLFW_TRUE);
-    int windowWidth = 1200;
-    int windowHeight = 900;
-    window = glfwCreateWindow(windowWidth, windowHeight, "MuJoCo Panda", NULL, NULL);
-    if (!window) { std::cerr << "Failed to create GLFW window\n"; glfwTerminate(); return 1; }
-    glfwMakeContextCurrent(window);
-    // Load OpenGL function pointers now that a context is current
-    if (!gladLoadGL((GLADloadfunc)glfwGetProcAddress)) {
-        std::cerr << "Failed to initialize OpenGL context\n";
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-    // Print GPU/GL info and verify required features (FBO)
-    const GLubyte* vendor = glGetString(GL_VENDOR);
-    const GLubyte* renderer = glGetString(GL_RENDERER);
-    const GLubyte* version = glGetString(GL_VERSION);
-    std::cout << "OpenGL Vendor: " << (vendor ? (const char*)vendor : "?") << "\n";
-    std::cout << "OpenGL Renderer: " << (renderer ? (const char*)renderer : "?") << "\n";
-    std::cout << "OpenGL Version: " << (version ? (const char*)version : "?") << "\n";
-    // Prefer version check: FBO is core in OpenGL >= 3.0
-    GLint glMajor = 0, glMinor = 0;
-    glGetIntegerv(GL_MAJOR_VERSION, &glMajor);
-    glGetIntegerv(GL_MINOR_VERSION, &glMinor);
-    if (glMajor < 3) {
-        std::cerr << "ERROR: OpenGL 3.0+ required for framebuffer objects.\n";
-        glfwDestroyWindow(window);
-        glfwTerminate();
-        return 1;
-    }
-    glfwSwapInterval(1);
+    // createEyeBuffer(leftEyeFBO, leftEyeTex, leftEyeDepth, renderWidth, renderHeight);
+    // createEyeBuffer(rightEyeFBO, rightEyeTex, rightEyeDepth, renderWidth, renderHeight);
 
     const int predict_horizon = 10; // temp for now
     MarkerIds markers = initMarkers(m, predict_horizon);
 
-    mjv_defaultOption(&opt);
-    mjv_defaultScene(&scn);
-    mjr_defaultContext(&con);
-    mjv_makeScene(m, &scn, 2000);
-    mjr_makeContext(m, &con, mjFONTSCALE_150);
-
-    std::cout << "Window Created:\n";
-
-    // Defer VR eye frustum setup until OpenVR is initialized
-
     // camera
-    mjv_defaultCamera(&objCamera);
-    objCamera.distance = 4.0;   // distance from target
-    objCamera.azimuth = 45.0;   // azimuth angle
-    objCamera.elevation = -30.0; // elevation angle
+    // mjv_defaultCamera(&objCamera);
+    // objCamera.distance = 4.0;   // distance from target
+    // objCamera.azimuth = 45.0;   // azimuth angle
+    // objCamera.elevation = -30.0; // elevation angle
 
-    std::cout << "Camera initialized:\n";
 
     mj_resetData(m, d);
 
@@ -303,18 +379,6 @@ int main() {
 
     do {
 
-        // Initialize both eyes frusta now that VR is initialized
-        std::cout << "Initializing VR eye frusta...\n";
-        for (int i = 0; i < 2; ++i) {
-            std::array<float, 6> frustum = vrBridge.getFrustum(i);
-            eyeCameras[i].orthographic = 0; // perspective
-            eyeCameras[i].frustum_center = frustum[0];
-            eyeCameras[i].frustum_width = frustum[1];
-            eyeCameras[i].frustum_bottom = frustum[2];
-            eyeCameras[i].frustum_top = frustum[3];
-            eyeCameras[i].frustum_near = frustum[4];
-            eyeCameras[i].frustum_far = frustum[5];
-        }
 
         while (!quitKeyPressed) {
             bool exitRenderLoop = false;
@@ -345,7 +409,7 @@ int main() {
 
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
-                    setVRCamPose(eyeCameras, vrPoses.hmdPose, 0.064f); // typical IPD ~64mm
+                    setVRCamPose(vrPoses.hmdPose, 0.064f); // typical IPD ~64mm
                     
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
                                              vrPoses.hmdPose.position[1],
@@ -383,6 +447,11 @@ int main() {
                     setMocapHandPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_right"), modelpos, modelquat);
                 }
 
+                // render in offscreen buffer
+                mjrRect viewFull = {0, 0, 2*(int)renderWidth, (int)renderHeight};
+                mjr_setBuffer(mjFB_OFFSCREEN, &con);
+                mjr_render(viewFull, &scn, &con);
+
                 // finish MuJoCo control loop
                 for (int i = 0; i < controlled_dofs; ++i) {
                     int idx = i;
@@ -395,15 +464,20 @@ int main() {
                     d->qpos[qpos_addr[idx]] = q_target[i];
                 }
 
-                mj_step(m, d);
-
                 // render all the cameras
-                renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight);
+                // renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight);
+                vr_render(renderWidth, renderHeight);
 
                 // submit frames to VR compositor
-                vrBridge.submit_vr_frame(leftEyeTex, rightEyeTex);
+                vrBridge.submit_vr_frame(EyeTex);
 
-                glfwSwapBuffers(window);
+                // swap if window is double-buffered, flush just in case
+                if(con.windowDoublebuffer)
+                    glfwSwapBuffers(window);
+                glFlush();
+
+                mj_step(m, d);
+
                 glfwPollEvents();
             } else {
                 // Throttle loop since xrWaitFrame won't be called.
@@ -420,6 +494,9 @@ int main() {
     glfwTerminate();
     mj_deleteData(d);
     mj_deleteModel(m);
+    // glDeleteFramebuffers(1, &leftEyeFBO);
+    // glDeleteFramebuffers(1, &rightEyeFBO);
+    glDeleteTextures(1, &EyeTex);
 
     std::cout << "Simulation closed.\n";
     return 0;

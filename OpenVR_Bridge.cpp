@@ -21,8 +21,13 @@ bool OpenVRBridge::init_vr() {
 		return false;
 	}
 
-    // Initialize camera textures and size here as needed
-    // ...
+    vr::VRCompositor()->SetTrackingSpace(vr::TrackingUniverseStanding);
+
+    // std::array<int, 2> size = getRecommendedRenderTargetSize();
+    // width = size[0];
+    // height = size[1];
+
+    // may need to comupute headset offsets and hands
 
     return true;
 }
@@ -34,16 +39,16 @@ std::array<float, 6> OpenVRBridge::getFrustum(int i) {
     }
     vr::EVREye eye = (i == 0) ? vr::Eye_Left : vr::Eye_Right;
 
+    float nearClip = 0.05f; // Set near clip distance
+    float farClip = 50.0f; // Set far clip distance
+
     float left, right, top, bottom;
     vr_system->GetProjectionRaw(eye, &left, &right, &top, &bottom);
 
-    float frustum_center = (left + right) / 2.0f;
+    float frustum_center = 0.5f*(left + right)*nearClip;
     float frustum_width = right - left;
 
-    float nearClip = 0.1f; // Set near clip distance
-    float farClip = 100.0f; // Set far clip distance
-
-    std::array<float, 6> frustum = {frustum_center, frustum_width, bottom, top, nearClip, farClip};
+    std::array<float, 6> frustum = {frustum_center, frustum_width, -bottom*nearClip, -top*nearClip, nearClip, farClip};
     return frustum;
 }
 
@@ -51,6 +56,14 @@ std::array<int, 2> OpenVRBridge::getRecommendedRenderTargetSize() {
     uint32_t width = 0, height = 0;
     vr_system->GetRecommendedRenderTargetSize(&width, &height);
     return {static_cast<int>(width), static_cast<int>(height)};
+}
+
+void OpenVRBridge::getProjectionRaw(vr::EVREye eye, float *pfLeft, float *pfRight, float *pfTop, float *pfBottom) {
+    if (!vr_system) {
+        std::cerr << "OpenVRBridge::getProjectionRaw called before init_vr() or after shutdown." << std::endl;
+        return;
+    }
+    vr_system->GetProjectionRaw(eye, pfLeft, pfRight, pfTop, pfBottom);
 }
 
 Pose getPoseFromMatrix(const vr::HmdMatrix34_t& mat) {
@@ -113,14 +126,12 @@ AllPoses OpenVRBridge::poll_vr() {
     return allPoses;
 }
 
-void OpenVRBridge::submit_vr_frame(GLuint leftEyeTex, GLuint rightEyeTex) {
-    vr::Texture_t leftEyeTexture = { (void*)(uintptr_t)leftEyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
-    vr::Texture_t rightEyeTexture = { (void*)(uintptr_t)rightEyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
+void OpenVRBridge::submit_vr_frame(GLuint EyeTex) {
+    vr::Texture_t vrTexture = { (void*)(uintptr_t)EyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
 
     // submit textures to OpenVR compositor
-    vr::VRCompositor()->Submit(vr::Eye_Left, &leftEyeTexture);
-    vr::VRCompositor()->Submit(vr::Eye_Right, &rightEyeTexture);
-
+    vr::VRCompositor()->Submit(vr::Eye_Left, &vrTexture);
+    vr::VRCompositor()->Submit(vr::Eye_Right, &vrTexture);
     // Notify the compositor that we've finished submitting for this frame
     vr::VRCompositor()->PostPresentHandoff();
 }
