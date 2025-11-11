@@ -102,68 +102,44 @@ void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelqua
     d->mocap_quat[4*body_id + 3] = modelquat[3];
 }
 
-void renderAll(mjModel* m, mjData* d, int windowWidth, int windowHeight, int renderWidth, int renderHeight) {
-    // VR Eye cameras
-    // 1. Left eye
-    // glBindFramebuffer(GL_FRAMEBUFFER, leftEyeFBO);
-    // glViewport(0, 0, renderWidth, renderHeight);
-    // glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
+    // convert to room coords
+    mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
+    mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
 
-    // // Update MuJoCo scene
-    // mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
-    // scn.camera[0] = eyeCameras[0];   // your mjvGLCamera for left eye
+    // mjtNum roomMat[9] = {
+    //     hmdPose.roomMatrix[0], hmdPose.roomMatrix[3], hmdPose.roomMatrix[6],
+    //     hmdPose.roomMatrix[1], hmdPose.roomMatrix[4], hmdPose.roomMatrix[7],
+    //     hmdPose.roomMatrix[2], hmdPose.roomMatrix[5], hmdPose.roomMatrix[8]
+    // };
 
-    // // Render
-    // mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+    mjtNum roomMat[9] = {
+        hmdPose.roomMatrix[0], hmdPose.roomMatrix[1], hmdPose.roomMatrix[2],
+        hmdPose.roomMatrix[3], hmdPose.roomMatrix[4], hmdPose.roomMatrix[5],
+        hmdPose.roomMatrix[6], hmdPose.roomMatrix[7], hmdPose.roomMatrix[8]
+    };
 
-    // // 2. Right eye
-    // glBindFramebuffer(GL_FRAMEBUFFER, rightEyeFBO);
-    // glViewport(0, 0, renderWidth, renderHeight);
-    // glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+    std::array<std::array<float, 3>, 2> eyeoffset = vrBridge.getEyeOffset();
+    
+    mjtNum modelpos[3];
+    mjtNum modelMat[9];
+    mjv_room2model(modelpos, modelMat, roompos, roomMat, &scn);
 
-    // mjv_updateScene(m, d, &opt, NULL, NULL, mjCAT_ALL, &scn);
-    // scn.camera[0] = eyeCameras[1];  // your mjvGLCamera for right eye
-    // mjr_render(mjrRect{0,0,renderWidth,renderHeight}, &scn, &con);
+    for(int n=0; n<2; n++) {
+        // assign position, apply eye-to-head offset
+        for(int i=0; i<3; i++)
+            scn.camera[n].pos[i] = roompos[i] +
+                eyeoffset[n][0]*roomMat[3*i+0] +
+                eyeoffset[n][1]*roomMat[3*i+1] +
+                eyeoffset[n][2]*roomMat[3*i+2];
 
-    // // Unbind
-    // glBindFramebuffer(GL_FRAMEBUFFER, 0);
-
-    // Objective camera (desktop view)
-    // mjv_updateScene(m, d, &opt, nullptr, &objCamera, mjCAT_ALL, &scn);
-    // mjrRect objRect = {0, 0, windowWidth, windowHeight};
-    // mjr_render(objRect, &scn, &con);
-}
-
-void setVRCamPose(Pose hmdPose, float ipd) {
-    for (int i = 0; i < 2; ++i) {
-        // convert to room coords
-        mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
-        mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
-        
-        mjtNum modelpos[3];
-        mjtNum modelquat[4];
-        
-        // room to model
-        mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
-
-        scn.camera[i].pos[0] = modelpos[0] + (i == 0 ? -ipd / 2 : ipd / 2); // x should be used for IPD
-        scn.camera[i].pos[1] = modelpos[1];
-        scn.camera[i].pos[2] = modelpos[2];
-        // Convert quaternion to forward and up vectors
-        float qw = modelquat[0];
-        float qx = modelquat[1];
-        float qy = modelquat[2]; 
-        float qz = modelquat[3];
-
-        // Forward vector
-        scn.camera[i].forward[0] = 2 * (qx * qz + qw * qy);
-        scn.camera[i].forward[1] = 2 * (qy * qz - qw * qx);
-        scn.camera[i].forward[2] = 1 - 2 * (qx * qx + qy * qy);
-
-        // Up vector
-        scn.camera[i].up[0] = 2 * (qx * qy - qw * qz);
-        scn.camera[i].up[1] = 1 - 2 * (qx * qx + qz * qz);
-        scn.camera[i].up[2] = 2 * (qy * qz + qw * qx);
+        // assign forward and up
+        scn.camera[n].forward[0] = -roomMat[6]; // row 2 col 0
+        scn.camera[n].forward[1] = -roomMat[7]; // row 2 col 1
+        scn.camera[n].forward[2] = -roomMat[8]; // row 2 col 2
+        scn.camera[n].up[0] = roomMat[1]; // row 0 col 1
+        scn.camera[n].up[1] = roomMat[4]; // row 1 col 1
+        scn.camera[n].up[2] = roomMat[7]; // row 2 col 1
     }
 }
 
@@ -269,6 +245,8 @@ int initMuJoCo(const char* MODEL, int width2, int height) {
     mjv_makeScene(m, &scn, 1000);
     mjr_makeContext(m, &con, mjFONTSCALE_100);
 
+    // mj_resetData(m, d);
+
     // initialize model transform
     scn.enabletransform = 1;
     scn.translate[1] = -0.5;
@@ -297,10 +275,14 @@ int main() {
         return 1;
     }
 
+    std::cout << "VR First Init Complete\n";
+
     // get the target render size
     std::array<int, 2> renderTargetSize = vrBridge.getRecommendedRenderTargetSize();
     int renderWidth = renderTargetSize[0];
     int renderHeight = renderTargetSize[1];
+
+    std::cout << "Size: " << renderWidth << "x" << renderHeight << "\n";
 
     if (!initMuJoCo(MODEL_XML, (int)2*renderWidth, (int)renderHeight)) {
         std::cerr << "Failed to initialize MuJoCo.\n";
@@ -320,13 +302,6 @@ int main() {
 
     const int predict_horizon = 10; // temp for now
     MarkerIds markers = initMarkers(m, predict_horizon);
-
-    // camera
-    // mjv_defaultCamera(&objCamera);
-    // objCamera.distance = 4.0;   // distance from target
-    // objCamera.azimuth = 45.0;   // azimuth angle
-    // objCamera.elevation = -30.0; // elevation angle
-
 
     mj_resetData(m, d);
 
@@ -409,7 +384,7 @@ int main() {
 
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
-                    setVRCamPose(vrPoses.hmdPose, 0.064f); // typical IPD ~64mm
+                    setVRCamPose(vrPoses.hmdPose, 0.061f, vrBridge); // typical IPD ~61mm
                     
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
                                              vrPoses.hmdPose.position[1],
@@ -428,7 +403,7 @@ int main() {
                     // room to model
                     mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
 
-                    std::cout << "Left Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
+                    // std::cout << "Left Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
                     setMocapHandPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_left"), modelpos, modelquat);
                 }
 
@@ -443,14 +418,9 @@ int main() {
                     // room to model
                     mjv_room2model(modelpos, modelquat, roompos, roomquat, &scn);
 
-                    std::cout << "Right Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
+                    // std::cout << "Right Controller Position: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
                     setMocapHandPos(d, mj_name2id(m, mjOBJ_BODY, "vr_hand_right"), modelpos, modelquat);
                 }
-
-                // render in offscreen buffer
-                mjrRect viewFull = {0, 0, 2*(int)renderWidth, (int)renderHeight};
-                mjr_setBuffer(mjFB_OFFSCREEN, &con);
-                mjr_render(viewFull, &scn, &con);
 
                 // finish MuJoCo control loop
                 for (int i = 0; i < controlled_dofs; ++i) {
@@ -464,8 +434,18 @@ int main() {
                     d->qpos[qpos_addr[idx]] = q_target[i];
                 }
 
+                // 1) update the MuJoCo scene (populate geometry, lights, etc.)
+                mjv_updateScene(m, d, &opt, nullptr, nullptr, mjCAT_ALL, &scn);
+
+                // 2) render offscreen into MuJoCo's offscreen buffer (which con.offFBO points to)
+                // viewFull should match your offscreen size (2*renderWidth x renderHeight for side-by-side)
+                mjrRect viewFull = {0, 0, 2*renderWidth, renderHeight};
+                mjr_setBuffer(mjFB_OFFSCREEN, &con);
+                glViewport(0, 0, 2*renderWidth, renderHeight);
+                glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
+                mjr_render(viewFull, &scn, &con);
+
                 // render all the cameras
-                // renderAll(m, d, windowWidth, windowHeight, renderWidth, renderHeight);
                 vr_render(renderWidth, renderHeight);
 
                 // submit frames to VR compositor

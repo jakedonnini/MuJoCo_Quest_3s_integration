@@ -15,7 +15,7 @@ bool OpenVRBridge::init_vr() {
         return false;
     }
 
-    if ( !vr::VRCompositor() )
+    if (!vr::VRCompositor())
 	{
 		printf( "Compositor initialization failed. See log file for details\n" );
 		return false;
@@ -23,13 +23,28 @@ bool OpenVRBridge::init_vr() {
 
     vr::VRCompositor()->SetTrackingSpace(vr::TrackingUniverseStanding);
 
-    // std::array<int, 2> size = getRecommendedRenderTargetSize();
-    // width = size[0];
-    // height = size[1];
+    // get HMD eye-to-head offsets (no rotation)
+    for(int n=0; n<2; n++) {
+        vr::EVREye eye = (n == 0) ? vr::Eye_Left : vr::Eye_Right;
+        vr::HmdMatrix34_t tmp = vr_system->GetEyeToHeadTransform(eye);
+        eyeoffset[n][0] = tmp.m[0][3];
+        eyeoffset[n][1] = tmp.m[1][3];
+        eyeoffset[n][2] = tmp.m[2][3];
+    }
 
-    // may need to comupute headset offsets and hands
+    std::cout << "Eye offsets (L/R): "
+              << eyeoffset[0][0] << "," << eyeoffset[0][1] << "," << eyeoffset[0][2] << " / "
+              << eyeoffset[1][0] << "," << eyeoffset[1][1] << "," << eyeoffset[1][2] << std::endl;
 
     return true;
+}
+
+std::array<std::array<float, 3>, 2> OpenVRBridge::getEyeOffset() {
+    std::array<std::array<float, 3>, 2> out{};
+    for (int i = 0; i < 2; ++i)
+        for (int j = 0; j < 3; ++j)
+            out[i][j] = eyeoffset[i][j];
+    return out;
 }
 
 std::array<float, 6> OpenVRBridge::getFrustum(int i) {
@@ -53,6 +68,11 @@ std::array<float, 6> OpenVRBridge::getFrustum(int i) {
 }
 
 std::array<int, 2> OpenVRBridge::getRecommendedRenderTargetSize() {
+    if (!vr_system) {
+        std::cerr << "vr_system not initialized! Returning {0,0}." << std::endl;
+        return {0, 0};
+    }
+
     uint32_t width = 0, height = 0;
     vr_system->GetRecommendedRenderTargetSize(&width, &height);
     return {static_cast<int>(width), static_cast<int>(height)};
@@ -87,6 +107,16 @@ Pose getPoseFromMatrix(const vr::HmdMatrix34_t& mat) {
     pose.orientation[1] = qx;
     pose.orientation[2] = qy;
     pose.orientation[3] = qz;
+
+    pose.roomMatrix[0] = mat.m[0][0];
+    pose.roomMatrix[1] = mat.m[0][1];
+    pose.roomMatrix[2] = mat.m[0][2];
+    pose.roomMatrix[3] = mat.m[1][0];
+    pose.roomMatrix[4] = mat.m[1][1];
+    pose.roomMatrix[5] = mat.m[1][2];
+    pose.roomMatrix[6] = mat.m[2][0];
+    pose.roomMatrix[7] = mat.m[2][1];
+    pose.roomMatrix[8] = mat.m[2][2];
 
     pose.valid = true;
     return pose;

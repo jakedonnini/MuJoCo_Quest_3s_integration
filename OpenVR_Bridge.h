@@ -14,6 +14,7 @@
 struct Pose {
     float position[3];
     float orientation[4];
+    float roomMatrix[9];
     bool valid;
 };
 
@@ -59,11 +60,13 @@ public:
 
     void getProjectionRaw(vr::EVREye eye, float *pfLeft, float *pfRight, float *pfTop, float *pfBottom);
 
+    std::array<std::array<float, 3>, 2> getEyeOffset();
+
 private:
     // Private container holding the HMD + controller poses. Default-initialized.
     AllPoses allPoses{};
 
-
+    std::array<std::array<float, 3>, 2> eyeoffset;  // head-to-eye offsets (assume no rotation)
 
     vr::IVRSystem* vr_system = nullptr;
     int width = 0;
