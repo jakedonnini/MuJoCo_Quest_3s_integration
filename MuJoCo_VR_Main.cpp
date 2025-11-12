@@ -102,6 +102,47 @@ void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelqua
     d->mocap_quat[4*body_id + 3] = modelquat[3];
 }
 
+bool checkOrthonormal(const mjtNum forward[3], const mjtNum up[3]) {
+    auto dot = forward[0]*up[0] + forward[1]*up[1] + forward[2]*up[2];
+    auto f_len = std::sqrt(forward[0]*forward[0] + forward[1]*forward[1] + forward[2]*forward[2]);
+    auto u_len = std::sqrt(up[0]*up[0] + up[1]*up[1] + up[2]*up[2]);
+    std::cout << "dot(forward, up): " << dot << std::endl;
+    std::cout << "‖forward‖=" << f_len << "  ‖up‖=" << u_len << std::endl;
+    return (std::abs(dot) < 1e-3 && std::abs(f_len - 1.0) < 1e-3 && std::abs(u_len - 1.0) < 1e-3);
+}
+
+// Convert OpenVR pose to MuJoCo coordinates (Y-up -> Z-up)
+void convertVRtoMuJoCo(Pose& p) {
+    // Rotate position
+    float x = p.position[0];
+    float y = p.position[1];
+    float z = p.position[2];
+    p.position[0] = x;
+    p.position[1] = z;
+    p.position[2] = -y;
+
+    // Rotate orientation (quaternion) by R_vr2mj
+    // Equivalent to pre-multiplying by 90° rotation around X axis: qfix = [√0.5, √0.5, 0, 0]
+    const float s = std::sqrt(0.5f);
+    float qfix[4] = {s, s, 0, 0};  // w, x, y, z (rotates +Y -> +Z)
+
+    // Quaternion multiply: q' = qfix * q
+    float qw = qfix[0]*p.orientation[0] - qfix[1]*p.orientation[1]
+             - qfix[2]*p.orientation[2] - qfix[3]*p.orientation[3];
+    float qx = qfix[0]*p.orientation[1] + qfix[1]*p.orientation[0]
+             + qfix[2]*p.orientation[3] - qfix[3]*p.orientation[2];
+    float qy = qfix[0]*p.orientation[2] - qfix[1]*p.orientation[3]
+             + qfix[2]*p.orientation[0] + qfix[3]*p.orientation[1];
+    float qz = qfix[0]*p.orientation[3] + qfix[1]*p.orientation[2]
+             - qfix[2]*p.orientation[1] + qfix[3]*p.orientation[0];
+
+    p.orientation[0] = qw;
+    p.orientation[1] = qx;
+    p.orientation[2] = qy;
+    p.orientation[3] = qz;
+}
+
+
 void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
     // convert to room coords
     mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
@@ -119,27 +160,59 @@ void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
         hmdPose.roomMatrix[6], hmdPose.roomMatrix[7], hmdPose.roomMatrix[8]
     };
 
+    // convert room to quat
+    // mju_mat2Quat(roomquat, roomMat);
+
     std::array<std::array<float, 3>, 2> eyeoffset = vrBridge.getEyeOffset();
     
-    mjtNum modelpos[3];
+    mjtNum modelPos[3];
+    mjtNum modelQuat[4];
+    mjv_room2model(modelPos, modelQuat, roompos, roomquat, &scn);
+
     mjtNum modelMat[9];
-    mjv_room2model(modelpos, modelMat, roompos, roomMat, &scn);
+    mju_quat2Mat(modelMat, modelQuat);
+
+    std::cout << "modelMat (column-major view) as rows:\n";
+    std::cout << modelMat[0] << ", " << modelMat[3] << ", " << modelMat[6] << ";\n"
+              << modelMat[1] << ", " << modelMat[4] << ", " << modelMat[7] << ";\n"
+              << modelMat[2] << ", " << modelMat[5] << ", " << modelMat[8] << ";\n";
 
     for(int n=0; n<2; n++) {
         // assign position, apply eye-to-head offset
-        for(int i=0; i<3; i++)
-            scn.camera[n].pos[i] = roompos[i] +
-                eyeoffset[n][0]*roomMat[3*i+0] +
-                eyeoffset[n][1]*roomMat[3*i+1] +
-                eyeoffset[n][2]*roomMat[3*i+2];
+        // for(int i=0; i<3; i++)
+        //     scn.camera[n].pos[i] = modelpos[i] +
+        //         eyeoffset[n][0]*modelMat[3*i+0] +
+        //         eyeoffset[n][1]*modelMat[3*i+1] +
+        //         eyeoffset[n][2]*modelMat[3*i+2];
+
+        mjtNum offsetModel[3];
+        // Convert offset to mjtNum and multiply: offsetModel = R * offset_local
+        // Note: R is column-major; mju_mulMatVec signature: out = mat * vec for mat as (nr x nc)
+        // Provide mat (R), vec (offset), nr=3, nc=3.
+        {
+            mjtNum offLocal[3] = { (mjtNum)eyeoffset[n][0], (mjtNum)eyeoffset[n][1], (mjtNum)eyeoffset[n][2] };
+            mju_mulMatVec(offsetModel, modelMat, offLocal, 3, 3);
+        }
+
+        // camera position = modelPos + offsetModel
+        for (int i = 0; i < 3; ++i) {
+            scn.camera[n].pos[i] = modelPos[i] + offsetModel[i];
+        }
 
         // assign forward and up
-        scn.camera[n].forward[0] = -roomMat[6]; // row 2 col 0
-        scn.camera[n].forward[1] = -roomMat[7]; // row 2 col 1
-        scn.camera[n].forward[2] = -roomMat[8]; // row 2 col 2
-        scn.camera[n].up[0] = roomMat[1]; // row 0 col 1
-        scn.camera[n].up[1] = roomMat[4]; // row 1 col 1
-        scn.camera[n].up[2] = roomMat[7]; // row 2 col 1
+        scn.camera[n].forward[0] = -modelMat[6]; // row 2 col 0
+        scn.camera[n].forward[1] = -modelMat[7]; // row 2 col 1
+        scn.camera[n].forward[2] = -modelMat[8]; // row 2 col 2
+        scn.camera[n].up[0] = modelMat[3]; // row 0 col 1
+        scn.camera[n].up[1] = modelMat[4]; // row 1 col 1
+        scn.camera[n].up[2] = modelMat[5]; // row 2 col 1
+
+        const mjtNum forward[3] = {scn.camera[n].forward[0], scn.camera[n].forward[1], scn.camera[n].forward[2]};
+        const mjtNum up[3] = {scn.camera[n].up[0], scn.camera[n].up[1], scn.camera[n].up[2]};
+        // print vecs 
+        std::cout << "forward: " << forward[0] << ", " << forward[1] << ", " << forward[2] << std::endl;
+        std::cout << "up: " << up[0] << ", " << up[1] << ", " << up[2] << std::endl;
+        // std::cout << "Checking orthonormality for eye " << n << ": " << checkOrthonormal(forward, up) << std::endl;
     }
 }
 
@@ -149,7 +222,7 @@ void cameraInit(OpenVRBridge vrBridge, int renderWidth, int renderHeight) {
     for (int i = 0; i < 2; ++i) {
         std::array<float, 6> frustum = vrBridge.getFrustum(i);
 
-        // scn.camera[i].orthographic = 0; // perspective
+        scn.camera[i].orthographic = 0; // perspective
         scn.camera[i].frustum_center = frustum[0]; 
         scn.camera[i].frustum_width = frustum[1];
         scn.camera[i].frustum_bottom = frustum[2];
@@ -384,6 +457,7 @@ int main() {
 
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
+                    convertVRtoMuJoCo(vrPoses.hmdPose);
                     setVRCamPose(vrPoses.hmdPose, 0.061f, vrBridge); // typical IPD ~61mm
                     
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],

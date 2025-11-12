@@ -39,6 +39,8 @@ bool OpenVRBridge::init_vr() {
     return true;
 }
 
+
+
 std::array<std::array<float, 3>, 2> OpenVRBridge::getEyeOffset() {
     std::array<std::array<float, 3>, 2> out{};
     for (int i = 0; i < 2; ++i)
