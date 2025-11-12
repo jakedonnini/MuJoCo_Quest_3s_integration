@@ -14,7 +14,7 @@
 
 #define M_PI 3.14159265358979323846
 
-// mjvCamera objCamera;       // Objective camera (monitor view) 
+mjvCamera externalCam;
 mjvOption opt; 
 mjvScene scn; 
 mjrContext con; 
@@ -142,17 +142,17 @@ void convertVRtoMuJoCo(Pose& p) {
     p.orientation[3] = qz;
 }
 
+void rotVecMatT(mjtNum out[3], const mjtNum vec[3], const mjtNum mat[9]) {
+    // mat is column-major 3x3: [0 3 6; 1 4 7; 2 5 8] if stored in 1D
+    out[0] = vec[0]*mat[0] + vec[1]*mat[3] + vec[2]*mat[6];
+    out[1] = vec[0]*mat[1] + vec[1]*mat[4] + vec[2]*mat[7];
+    out[2] = vec[0]*mat[2] + vec[1]*mat[5] + vec[2]*mat[8];
+}
 
 void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
     // convert to room coords
     mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
     mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
-
-    // mjtNum roomMat[9] = {
-    //     hmdPose.roomMatrix[0], hmdPose.roomMatrix[3], hmdPose.roomMatrix[6],
-    //     hmdPose.roomMatrix[1], hmdPose.roomMatrix[4], hmdPose.roomMatrix[7],
-    //     hmdPose.roomMatrix[2], hmdPose.roomMatrix[5], hmdPose.roomMatrix[8]
-    // };
 
     mjtNum roomMat[9] = {
         hmdPose.roomMatrix[0], hmdPose.roomMatrix[1], hmdPose.roomMatrix[2],
@@ -213,10 +213,19 @@ void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
         std::cout << "forward: " << forward[0] << ", " << forward[1] << ", " << forward[2] << std::endl;
         std::cout << "up: " << up[0] << ", " << up[1] << ", " << up[2] << std::endl;
         // std::cout << "Checking orthonormality for eye " << n << ": " << checkOrthonormal(forward, up) << std::endl;
-    }
+    } 
 }
 
 void cameraInit(OpenVRBridge vrBridge, int renderWidth, int renderHeight) {
+    // initialize external camera
+    externalCam.type = mjCAMERA_FREE;  // free camera you can place anywhere
+    externalCam.lookat[0] = 0.0;
+    externalCam.lookat[1] = 0.0;
+    externalCam.lookat[2] = 0.0;
+    externalCam.distance = 1.5;         // distance from lookat point
+    externalCam.elevation = 20.0;      // degrees
+    externalCam.azimuth = 60.0;
+
     // Initialize both eyes frusta now that VR is initialized
     std::cout << "Initializing VR eye frusta...\n";
     for (int i = 0; i < 2; ++i) {
@@ -332,6 +341,42 @@ int initMuJoCo(const char* MODEL, int width2, int height) {
     scn.stereo = mjSTEREO_SIDEBYSIDE;
 
     return 1;
+}
+
+// Append two debug arrows at the VR camera position: forward (red) and up (green).
+// This uses MuJoCo's custom geometry buffer in mjvScene; we reset scn.ngeom to the
+// base geoms each call to avoid accumulating arrows.
+void addVRCameraArrows(mjvScene& scn, const mjtNum camPos[3], const mjtNum camForward[3], const mjtNum camUp[3]) {
+    static int baseGeomCount = -1;
+    if (baseGeomCount < 0) baseGeomCount = scn.ngeom;
+    scn.ngeom = baseGeomCount; // discard previous frame's arrows
+
+    auto addArrow = [&](const mjtNum dirIn[3], const float rgba[4]) {
+        if (scn.ngeom >= scn.maxgeom) return;
+        // Normalize direction
+        mjtNum dir[3] = {dirIn[0], dirIn[1], dirIn[2]};
+        mju_normalize3(dir);
+        // Build orientation with columns (right, up, forward) so arrow points along 'dir'
+        mjtNum upTmp[3] = {0,1,0};
+        if (std::fabs(mju_dot3(dir, upTmp)) > 0.95) { upTmp[0]=1; upTmp[1]=0; upTmp[2]=0; }
+        mjtNum right[3]; mju_cross(right, dir, upTmp); mju_normalize3(right);
+        mjtNum newUp[3]; mju_cross(newUp, right, dir); mju_normalize3(newUp);
+        mjtNum mat[9] = {
+            right[0], right[1], right[2],
+            newUp[0], newUp[1], newUp[2],
+            dir[0],   dir[1],   dir[2]
+        };
+        mjtNum size[3] = {0.01f, 0.03f, 0.20f}; // radius, head, length
+        mjvGeom* g = scn.geoms + scn.ngeom;
+        mjv_initGeom(g, mjGEOM_ARROW, size, (mjtNum*)camPos, mat, rgba);
+        g->segid = -1;
+        scn.ngeom++;
+    };
+
+    const float rgbaF[4] = {1,0,0,1};
+    const float rgbaU[4] = {0,1,0,1};
+    addArrow(camForward, rgbaF);
+    addArrow(camUp,      rgbaU);
 }
 
 // basic implementation just to build for now
@@ -458,7 +503,12 @@ int main() {
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
                     convertVRtoMuJoCo(vrPoses.hmdPose);
-                    setVRCamPose(vrPoses.hmdPose, 0.061f, vrBridge); // typical IPD ~61mm
+                        setVRCamPose(vrPoses.hmdPose, 0.061f, vrBridge); // typical IPD ~61mm
+                        // Add debug arrows at first eye camera (forward/up)
+                        mjtNum camPos[3] = { (mjtNum)scn.camera[0].pos[0], (mjtNum)scn.camera[0].pos[1], (mjtNum)scn.camera[0].pos[2] };
+                        mjtNum camFwd[3] = { (mjtNum)scn.camera[0].forward[0], (mjtNum)scn.camera[0].forward[1], (mjtNum)scn.camera[0].forward[2] };
+                        mjtNum camUp[3]  = { (mjtNum)scn.camera[0].up[0], (mjtNum)scn.camera[0].up[1], (mjtNum)scn.camera[0].up[2] };
+                        addVRCameraArrows(scn, camPos, camFwd, camUp);
                     
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
                                              vrPoses.hmdPose.position[1],
@@ -468,6 +518,9 @@ int main() {
 
                 // set the pos of left hand
                 if (vrPoses.leftControllerPose.valid) {
+
+                    convertVRtoMuJoCo(vrPoses.leftControllerPose);
+
                     mjtNum roompos[3]  = { vrPoses.leftControllerPose.position[0], vrPoses.leftControllerPose.position[1], vrPoses.leftControllerPose.position[2] };
                     mjtNum roomquat[4] = { vrPoses.leftControllerPose.orientation[0], vrPoses.leftControllerPose.orientation[1], vrPoses.leftControllerPose.orientation[2], vrPoses.leftControllerPose.orientation[3] };
                     
@@ -483,6 +536,9 @@ int main() {
 
                 // set the pos of right hand
                 if (vrPoses.rightControllerPose.valid) {
+
+                    convertVRtoMuJoCo(vrPoses.rightControllerPose);
+
                     mjtNum roompos[3]  = { vrPoses.rightControllerPose.position[0], vrPoses.rightControllerPose.position[1], vrPoses.rightControllerPose.position[2] };
                     mjtNum roomquat[4] = { vrPoses.rightControllerPose.orientation[0], vrPoses.rightControllerPose.orientation[1], vrPoses.rightControllerPose.orientation[2], vrPoses.rightControllerPose.orientation[3] };
 
@@ -509,7 +565,16 @@ int main() {
                 }
 
                 // 1) update the MuJoCo scene (populate geometry, lights, etc.)
-                mjv_updateScene(m, d, &opt, nullptr, nullptr, mjCAT_ALL, &scn);
+                mjv_updateScene(m, d, &opt, nullptr, &externalCam, mjCAT_ALL, &scn);
+
+                mjrRect viewExternal = {0, 0, 800, 600};  // window size for debug
+                // Render an external view using externalCam by updating scene with that camera
+                // mjv_updateScene(m, d, &opt, nullptr, &externalCam, mjCAT_ALL, &scn);
+                mjr_render(viewExternal, &scn, &con);
+
+
+                // // Restore scene using VR cameras for offscreen render
+                // mjv_updateScene(m, d, &opt, nullptr, nullptr, mjCAT_ALL, &scn);
 
                 // 2) render offscreen into MuJoCo's offscreen buffer (which con.offFBO points to)
                 // viewFull should match your offscreen size (2*renderWidth x renderHeight for side-by-side)

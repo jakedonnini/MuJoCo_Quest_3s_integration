@@ -159,11 +159,14 @@ AllPoses OpenVRBridge::poll_vr() {
 }
 
 void OpenVRBridge::submit_vr_frame(GLuint EyeTex) {
+    const vr::VRTextureBounds_t boundLeft  = {0, 1, 0.5, 0};
+    const vr::VRTextureBounds_t boundRight = {0.5, 1, 1, 0};
+
     vr::Texture_t vrTexture = { (void*)(uintptr_t)EyeTex, vr::TextureType_OpenGL, vr::ColorSpace_Gamma };
 
     // submit textures to OpenVR compositor
-    vr::VRCompositor()->Submit(vr::Eye_Left, &vrTexture);
-    vr::VRCompositor()->Submit(vr::Eye_Right, &vrTexture);
+    vr::VRCompositor()->Submit(vr::Eye_Left, &vrTexture, &boundLeft);
+    vr::VRCompositor()->Submit(vr::Eye_Right, &vrTexture, &boundRight);
     // Notify the compositor that we've finished submitting for this frame
     vr::VRCompositor()->PostPresentHandoff();
 }
