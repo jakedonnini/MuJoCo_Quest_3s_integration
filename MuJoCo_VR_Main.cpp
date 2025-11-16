@@ -28,6 +28,8 @@ GLuint leftEyeFBO, rightEyeFBO;
 GLuint EyeTex;
 GLuint leftEyeDepth, rightEyeDepth;
 
+int vrHeadId;
+
 // const char* MODEL_XML = "C:/Users/jaked/Documents/Physics_Sim/mujoco_menagerie-main/mujoco_menagerie-main/franka_emika_panda/mjx_panda.xml";
 const char* MODEL_XML = "C:/Users/jaked/OneDrive/Documents/Mujoco_VR/MuJoCo_Quest_3s_integration/xml/mjx_panda_MPC.xml";
 
@@ -92,6 +94,7 @@ void setMocapBodyPos(mjData* d, int body_id, const Eigen::Vector3d& p) {
 
 void setMocapHandPos(mjData* d, int body_id, mjtNum modelpos[3], mjtNum modelquat[4]) {
     if (body_id < 0) return;
+    // std::cout << "Setting mocap hand id " << body_id << " pos: " << modelpos[0] << ", " << modelpos[1] << ", " << modelpos[2] << std::endl;
     d->mocap_pos[3*body_id + 0] = modelpos[0];
     d->mocap_pos[3*body_id + 1] = modelpos[1];
     d->mocap_pos[3*body_id + 2] = modelpos[2];
@@ -149,7 +152,7 @@ void rotVecMatT(mjtNum out[3], const mjtNum vec[3], const mjtNum mat[9]) {
     out[2] = vec[0]*mat[2] + vec[1]*mat[5] + vec[2]*mat[8];
 }
 
-void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
+void setVRCamPoseGL(Pose hmdPose, OpenVRBridge vrBridge) {
     // convert to room coords
     mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
     mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
@@ -216,15 +219,54 @@ void setVRCamPose(Pose hmdPose, float ipd, OpenVRBridge vrBridge) {
     } 
 }
 
+void setVRCamPose(Pose hmdPose, OpenVRBridge vrBridge) {
+    // convert to room coords
+    mjtNum roompos[3]  = { hmdPose.position[0], hmdPose.position[1], hmdPose.position[2] };
+    mjtNum roomquat[4] = { hmdPose.orientation[0], hmdPose.orientation[1], hmdPose.orientation[2], hmdPose.orientation[3] };
+
+    mjtNum roomMat[9] = {
+        hmdPose.roomMatrix[0], hmdPose.roomMatrix[1], hmdPose.roomMatrix[2],
+        hmdPose.roomMatrix[3], hmdPose.roomMatrix[4], hmdPose.roomMatrix[5],
+        hmdPose.roomMatrix[6], hmdPose.roomMatrix[7], hmdPose.roomMatrix[8]
+    };
+
+    // convert room to quat
+    // mju_mat2Quat(roomquat, roomMat);
+
+    std::array<std::array<float, 3>, 2> eyeoffset = vrBridge.getEyeOffset();
+    
+    mjtNum modelPos[3];
+    mjtNum modelQuat[4];
+    mjv_room2model(modelPos, modelQuat, roompos, roomquat, &scn);
+
+    std::cout << "Setting mocap camera id " << vrHeadId << " pos: " << roompos[0] << ", " << roompos[1] << ", " << roompos[2] << std::endl;
+    // std::cout << "Vr head: " << vrHeadId << std::endl;
+
+
+    d->mocap_pos[3*vrHeadId + 0] = modelPos[0];
+    d->mocap_pos[3*vrHeadId + 1] = modelPos[1];
+    d->mocap_pos[3*vrHeadId + 2] = modelPos[2];
+
+    d->mocap_quat[4*vrHeadId + 0] = modelQuat[0];
+    d->mocap_quat[4*vrHeadId + 1] = modelQuat[1];
+    d->mocap_quat[4*vrHeadId + 2] = modelQuat[2];
+    d->mocap_quat[4*vrHeadId + 3] = modelQuat[3];
+
+    // d->mocap_pos[3*vrHeadId + 0] = roompos[0];
+    // d->mocap_pos[3*vrHeadId + 1] = roompos[1];
+    // d->mocap_pos[3*vrHeadId + 2] = roompos[2];
+
+    // d->mocap_quat[4*vrHeadId + 0] = roomquat[0];
+    // d->mocap_quat[4*vrHeadId + 1] = roomquat[1];
+    // d->mocap_quat[4*vrHeadId + 2] = roomquat[2];
+    // d->mocap_quat[4*vrHeadId + 3] = roomquat[3];
+}
+
 void cameraInit(OpenVRBridge vrBridge, int renderWidth, int renderHeight) {
     // initialize external camera
-    externalCam.type = mjCAMERA_FREE;  // free camera you can place anywhere
-    externalCam.lookat[0] = 0.0;
-    externalCam.lookat[1] = 0.0;
-    externalCam.lookat[2] = 0.0;
-    externalCam.distance = 1.5;         // distance from lookat point
-    externalCam.elevation = 20.0;      // degrees
-    externalCam.azimuth = 60.0;
+    externalCam.type = mjCAMERA_FIXED;  // free camera you can place anywhere
+    vrHeadId = mj_name2id(m, mjOBJ_BODY, "vr_head");
+    externalCam.fixedcamid = mj_name2id(m, mjOBJ_CAMERA, "fixed_cam");
 
     // Initialize both eyes frusta now that VR is initialized
     std::cout << "Initializing VR eye frusta...\n";
@@ -336,6 +378,7 @@ int initMuJoCo(const char* MODEL, int width2, int height) {
     scn.rotate[0] = (float)cos(-0.25*mjPI);
     scn.rotate[1] = (float)sin(-0.25*mjPI);
     scn.scale = 1;
+    scn.enabletransform = 0;
 
     // stereo mode
     scn.stereo = mjSTEREO_SIDEBYSIDE;
@@ -426,6 +469,7 @@ int main() {
     std::vector<int> joint_ids, qpos_addr, dof_addr;
     for (int i = 1; i <= 7; ++i) {
         int jid = mj_name2id(m, mjOBJ_JOINT, ("joint" + std::to_string(i)).c_str());
+        // std::cout << "Joint " << i << " ID: " << jid << std::endl;
         if (jid >= 0) {
             joint_ids.push_back(jid);
             qpos_addr.push_back(m->jnt_qposadr[jid]);
@@ -503,17 +547,18 @@ int main() {
                 if (vrPoses.hmdPose.valid) { // check if others are vaildS
                     // Map HMD position to target position in simulation
                     convertVRtoMuJoCo(vrPoses.hmdPose);
-                        setVRCamPose(vrPoses.hmdPose, 0.061f, vrBridge); // typical IPD ~61mm
-                        // Add debug arrows at first eye camera (forward/up)
-                        mjtNum camPos[3] = { (mjtNum)scn.camera[0].pos[0], (mjtNum)scn.camera[0].pos[1], (mjtNum)scn.camera[0].pos[2] };
-                        mjtNum camFwd[3] = { (mjtNum)scn.camera[0].forward[0], (mjtNum)scn.camera[0].forward[1], (mjtNum)scn.camera[0].forward[2] };
-                        mjtNum camUp[3]  = { (mjtNum)scn.camera[0].up[0], (mjtNum)scn.camera[0].up[1], (mjtNum)scn.camera[0].up[2] };
-                        addVRCameraArrows(scn, camPos, camFwd, camUp);
+                    setVRCamPose(vrPoses.hmdPose, vrBridge);
+
+                    // Add debug arrows at first eye camera (forward/up)
+                    // mjtNum camPos[3] = { (mjtNum)scn.camera[0].pos[0], (mjtNum)scn.camera[0].pos[1], (mjtNum)scn.camera[0].pos[2] };
+                    // mjtNum camFwd[3] = { (mjtNum)scn.camera[0].forward[0], (mjtNum)scn.camera[0].forward[1], (mjtNum)scn.camera[0].forward[2] };
+                    // mjtNum camUp[3]  = { (mjtNum)scn.camera[0].up[0], (mjtNum)scn.camera[0].up[1], (mjtNum)scn.camera[0].up[2] };
+                    // addVRCameraArrows(scn, camPos, camFwd, camUp);
                     
                     Eigen::Vector3d hmd_pos(vrPoses.hmdPose.position[0],
                                              vrPoses.hmdPose.position[1],
                                              vrPoses.hmdPose.position[2]);
-                    std::cout << "HMD Position: " << hmd_pos.transpose() << std::endl;
+                    // std::cout << "HMD Position: " << hmd_pos.transpose() << std::endl;
                 }
 
                 // set the pos of left hand
@@ -564,8 +609,35 @@ int main() {
                     d->qpos[qpos_addr[idx]] = q_target[i];
                 }
 
+                std::cout << "Robot base pos: "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"link0")+0] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"link0")+1] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"link0")+2] << "\n";
+
+                std::cout << "Head pos: "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_head")+0] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_head")+1] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_head")+2] << "\n";
+                
+                std::cout << "cam pos: "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_CAMERA,"fixed_cam")+0] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_CAMERA,"fixed_cam")+1] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_CAMERA,"fixed_cam")+2] << "\n";
+
+                std::cout << "left hand pos: "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_left")+0] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_left")+1] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_left")+2] << "\n";
+
+                std::cout << "right hand pos: "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_right")+0] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_right")+1] << ", "
+                    << d->xpos[3*mj_name2id(m, mjOBJ_BODY,"vr_hand_right")+2] << "\n";
+
                 // 1) update the MuJoCo scene (populate geometry, lights, etc.)
                 mjv_updateScene(m, d, &opt, nullptr, &externalCam, mjCAT_ALL, &scn);
+
+                mjv_updateCamera(m, d, &externalCam, &scn);
 
                 mjrRect viewExternal = {0, 0, 800, 600};  // window size for debug
                 // Render an external view using externalCam by updating scene with that camera

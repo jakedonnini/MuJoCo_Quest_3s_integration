@@ -140,7 +140,7 @@ AllPoses OpenVRBridge::poll_vr() {
     }
 
     // get left controller pose
-    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[0]].bPoseIsValid) {
+    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[1]].bPoseIsValid) {
         const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Controller[0]].mDeviceToAbsoluteTracking;
         allPoses.leftControllerPose = getPoseFromMatrix(mat);
     } else {
@@ -148,7 +148,7 @@ AllPoses OpenVRBridge::poll_vr() {
     }
 
     // get right controller pose
-    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[1]].bPoseIsValid) {
+    if (trackedDevicePose[k_unTrackedDeviceIndex_Controller[0]].bPoseIsValid) {
         const vr::HmdMatrix34_t& mat = trackedDevicePose[k_unTrackedDeviceIndex_Controller[1]].mDeviceToAbsoluteTracking;
         allPoses.rightControllerPose = getPoseFromMatrix(mat);
     } else {

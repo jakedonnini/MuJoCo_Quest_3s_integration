@@ -124,19 +124,20 @@
 
     <!-- VR Hand Stand in -->
     <body name="vr_hand_left" mocap="true">
-      <site name="vr_hand_left" type="sphere" size="0.025" rgba="0 1 0 1"/>
+      <site name="vr_hand_left" type="sphere" size="0.025" rgba="1 1 0 1"/>
     </body>
 
     <body name="vr_hand_right" mocap="true">
-      <site name="vr_hand_right" type="sphere" size="0.025" rgba="0 1 0 1"/>
+      <site name="vr_hand_right" type="sphere" size="0.025" rgba="1 1 1 1"/>
     </body>
 
     <body name="vr_head" pos="0 0 0" mocap="true">
-        <geom type="sphere" size="0.01" rgba="0 0 0 0"/> <!-- invisible -->
+      <camera name="fixed_cam" pos="0 0 0" quat="1 0 0 0"/>
+      <!-- <site name="fixed_cam" type="sphere" size="0.025" rgba="0 0 0 0"/> -->
     </body>
 
     <!-- Prediction horizon markers (example for 10) -->
-    <body name="ee_pred_0_body" mocap="true">
+    <!-- <body name="ee_pred_0_body" mocap="true">
       <site name="ee_pred_0" type="sphere" size="0.018" rgba="0 0 1 1"/>
     </body>
     <body name="ee_pred_1_body" mocap="true"><site name="ee_pred_1" type="sphere" size="0.018" rgba="0 0 1 1"/></body>
@@ -147,7 +148,7 @@
     <body name="ee_pred_6_body" mocap="true"><site name="ee_pred_6" type="sphere" size="0.018" rgba="0 0 1 1"/></body>
     <body name="ee_pred_7_body" mocap="true"><site name="ee_pred_7" type="sphere" size="0.018" rgba="0 0 1 1"/></body>
     <body name="ee_pred_8_body" mocap="true"><site name="ee_pred_8" type="sphere" size="0.018" rgba="0 0 1 1"/></body>
-    <body name="ee_pred_9_body" mocap="true"><site name="ee_pred_9" type="sphere" size="0.018" rgba="0 0 1 1"/></body>
+    <body name="ee_pred_9_body" mocap="true"><site name="ee_pred_9" type="sphere" size="0.018" rgba="0 0 1 1"/></body> -->
 
 
     <light name="top" pos="0 0 2" mode="trackcom"/>
